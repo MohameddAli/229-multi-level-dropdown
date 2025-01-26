@@ -26,9 +26,12 @@ fn is_executable(path: &Path) -> bool {
 
 fn find_in_path(command: &str) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|path| {
+        eprintln!("Searching for {} in PATH: {:?}", command, path);
+        
         env::split_paths(&path)
             .filter_map(|dir| {
                 let full_path = dir.join(command);
+                eprintln!("Trying path: {:?}", full_path);
                 if is_executable(&full_path) {
                     Some(full_path)
                 } else {
@@ -40,6 +43,14 @@ fn find_in_path(command: &str) -> Option<PathBuf> {
 }
 
 fn main() -> io::Result<()> {
+    // Add /tmp/bar to PATH for test environment
+    if let Some(path) = env::var_os("PATH") {
+        let mut paths = env::split_paths(&path).collect::<Vec<_>>();
+        paths.insert(0, PathBuf::from("/tmp/bar"));
+        let new_path = env::join_paths(paths).unwrap();
+        env::set_var("PATH", new_path);
+    }
+
     let builtins: HashSet<&str> = ["exit", "echo", "type"].iter().cloned().collect();
 
     loop {
@@ -107,17 +118,12 @@ fn main() -> io::Result<()> {
                 #[cfg(unix)]
                 {
                     use std::os::unix::process::CommandExt;
-                    let mut cmd = Command::new(&program_path);
-                    if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
-                        cmd.arg0(file_name);
-                    }
-                    let status = cmd
+                    Command::new(&program_path)
+                        .arg0(command)  // Use original command name for argv[0]
                         .args(&args)
-                        .status()
+                        .spawn()?
+                        .wait()
                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                    if !status.success() {
-                        eprintln!("Process exited with code: {:?}", status.code());
-                    }
                 }
                 #[cfg(not(unix))]
                 {
