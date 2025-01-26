@@ -102,13 +102,6 @@ fn main() -> io::Result<()> {
                     continue;
                 };
 
-                // Arg #0 (program name) change
-                if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
-                    println!("Arg #0 (program name): {}", file_name);
-                } else {
-                    println!("Arg #0 (program name): <invalid>");
-                }
-
                 let args = parts.iter().skip(1).map(|s| OsStr::new(s)).collect::<Vec<_>>();
 
                 #[cfg(unix)]
