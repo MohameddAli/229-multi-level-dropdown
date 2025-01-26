@@ -95,7 +95,9 @@ fn main() -> io::Result<()> {
                     continue;
                 }
 
-                let program_path = if let Some(path) = find_in_path(command) {
+                let program_path = if command.contains("/") || command.contains("\\") {
+                    PathBuf::from(command)
+                } else if let Some(path) = find_in_path(command) {
                     path
                 } else {
                     println!("{}: command not found", command);
@@ -105,19 +107,16 @@ fn main() -> io::Result<()> {
                 println!("Program was passed {} args (including program name).", parts.len());
                 for (i, arg) in parts.iter().enumerate() {
                     if i == 0 {
-                        println!("Arg #0 (program name): {}", program_path.display());
+                        if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
+                            println!("Arg #0 (program name): {}", file_name);
+                        } else {
+                            println!("Arg #0 (program name): <invalid>");
+                        }
                     } else {
                         println!("Arg #{}: {}", i, arg);
                     }
                 }
                 println!("Program Signature: 4438555083");
-
-                // Arg #0 (program name) change
-                if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
-                    println!("Arg #0 (program name): {}", file_name);
-                } else {
-                    println!("Arg #0 (program name): <invalid>");
-                }
 
                 let args = parts.iter().skip(1).map(|s| OsStr::new(s)).collect::<Vec<_>>();
 
