@@ -5,7 +5,6 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
-use std::os::unix::process::CommandExt;
 
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
@@ -102,6 +101,13 @@ fn main() -> io::Result<()> {
                     println!("{}: command not found", command);
                     continue;
                 };
+
+                // Arg #0 (program name) change
+                if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
+                    println!("Arg #0 (program name): {}", file_name);
+                } else {
+                    println!("Arg #0 (program name): <invalid>");
+                }
 
                 let args = parts.iter().skip(1).map(|s| OsStr::new(s)).collect::<Vec<_>>();
 
