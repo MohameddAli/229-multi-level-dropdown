@@ -116,7 +116,7 @@ fn main() -> io::Result<()> {
                         println!("Arg #{}: {}", i, arg);
                     }
                 }
-                println!("Program Signature: 4438555083");
+                println!("Program Signature: 8276923791");
 
                 let args = parts.iter().skip(1).map(|s| OsStr::new(s)).collect::<Vec<_>>();
 
@@ -137,7 +137,11 @@ fn main() -> io::Result<()> {
                 }
                 #[cfg(not(unix))]
                 {
-                    let status = Command::new(&program_path)
+                    let mut cmd = Command::new(&program_path);
+                    if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
+                        cmd.arg0(file_name);
+                    }
+                    let status = cmd
                         .args(&args)
                         .status()
                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
