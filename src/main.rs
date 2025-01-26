@@ -28,17 +28,18 @@ fn find_in_path(command: &str) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|path| {
         eprintln!("Searching for {} in PATH: {:?}", command, path);
         
-        env::split_paths(&path)
-            .filter_map(|dir| {
-                let full_path = dir.join(command);
-                eprintln!("Trying path: {:?}", full_path);
-                if is_executable(&full_path) {
-                    Some(full_path)
-                } else {
-                    None
-                }
-            })
-            .next()
+        for dir in env::split_paths(&path) {
+            let full_path = dir.join(command);
+            eprintln!("Checking path: {:?}", full_path);
+            eprintln!("File exists: {}", full_path.exists());
+            eprintln!("Is executable: {}", is_executable(&full_path));
+            
+            if is_executable(&full_path) {
+                eprintln!("Found executable at: {:?}", full_path);
+                return Some(full_path);
+            }
+        }
+        None
     })
 }
 
@@ -48,7 +49,20 @@ fn main() -> io::Result<()> {
         let mut paths = env::split_paths(&path).collect::<Vec<_>>();
         paths.insert(0, PathBuf::from("/tmp/bar"));
         let new_path = env::join_paths(paths).unwrap();
-        env::set_var("PATH", new_path);
+        env::set_var("PATH", &new_path);
+        eprintln!("Updated PATH: {:?}", env::var_os("PATH"));
+        
+        // Verify /tmp/bar exists and is accessible
+        let tmp_bar = PathBuf::from("/tmp/bar");
+        eprintln!("/tmp/bar exists: {}", tmp_bar.exists());
+        if let Ok(entries) = fs::read_dir(&tmp_bar) {
+            eprintln!("Contents of /tmp/bar:");
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    eprintln!("  {:?}", entry.path());
+                }
+            }
+        }
     }
 
     let builtins: HashSet<&str> = ["exit", "echo", "type"].iter().cloned().collect();
