@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
-use std::process;
+use std::path::{Path, PathBuf};
+use std::process::{self, Command};
+use std::os::unix::process::CommandExt;
 
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
@@ -23,12 +25,27 @@ fn is_executable(path: &Path) -> bool {
         && path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("exe"))
 }
 
-fn main() {
+fn find_in_path(command: &str) -> Option<PathBuf> {
+    env::var_os("PATH").and_then(|path| {
+        env::split_paths(&path)
+            .filter_map(|dir| {
+                let full_path = dir.join(command);
+                if is_executable(&full_path) {
+                    Some(full_path)
+                } else {
+                    None
+                }
+            })
+            .next()
+    })
+}
+
+fn main() -> io::Result<()> {
     let builtins: HashSet<&str> = ["exit", "echo", "type"].iter().cloned().collect();
 
     loop {
         print!("$ ");
-        io::stdout().flush().expect("Failed to flush stdout");
+        io::stdout().flush()?;
 
         let mut input = String::new();
         match io::stdin().read_line(&mut input) {
@@ -62,32 +79,43 @@ fn main() {
                     continue;
                 }
                 let cmd_to_check = parts[1];
-
-                // الخطوة 1: التحقق من الأوامر المدمجة أولاً
                 if builtins.contains(cmd_to_check) {
                     println!("{} is a shell builtin", cmd_to_check);
                     continue;
                 }
 
-                // الخطوة 2: البحث في مجلدات PATH
-                let path_var = env::var("PATH").unwrap_or_default();
-                let dirs = path_var.split(':').collect::<Vec<&str>>();
-                let mut found = false;
-
-                for dir in dirs {
-                    let full_path = Path::new(dir).join(cmd_to_check);
-                    if is_executable(&full_path) {
-                        println!("{} is {}", cmd_to_check, full_path.display());
-                        found = true;
-                        break;
-                    }
-                }
-
-                if !found {
+                if let Some(path) = find_in_path(cmd_to_check) {
+                    println!("{} is {}", cmd_to_check, path.display());
+                } else {
                     println!("{}: not found", cmd_to_check);
                 }
             }
-            _ => println!("{}: command not found", command),
+            _ => {
+                if builtins.contains(command) {
+                    println!("{}: command not found", command);
+                    continue;
+                }
+
+                let program_path = if let Some(path) = find_in_path(command) {
+                    path
+                } else {
+                    println!("{}: command not found", command);
+                    continue;
+                };
+
+                let args = parts.iter().skip(1).map(|s| OsStr::new(s)).collect::<Vec<_>>();
+
+                let status = Command::new(&program_path)
+                    .args(&args)
+                    .status()
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+                if !status.success() {
+                    eprintln!("Process exited with code: {:?}", status.code());
+                }
+            }
         }
     }
+
+    Ok(())
 }
