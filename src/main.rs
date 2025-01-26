@@ -95,28 +95,19 @@ fn main() -> io::Result<()> {
                     continue;
                 }
 
-                let program_path = if command.contains("/") || command.contains("\\") {
-                    PathBuf::from(command)
-                } else if let Some(path) = find_in_path(command) {
+                let program_path = if let Some(path) = find_in_path(command) {
                     path
                 } else {
                     println!("{}: command not found", command);
                     continue;
                 };
 
-                println!("Program was passed {} args (including program name).", parts.len());
-                for (i, arg) in parts.iter().enumerate() {
-                    if i == 0 {
-                        if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
-                            println!("Arg #0 (program name): {}", file_name);
-                        } else {
-                            println!("Arg #0 (program name): <invalid>");
-                        }
-                    } else {
-                        println!("Arg #{}: {}", i, arg);
-                    }
+                // Arg #0 (program name) change
+                if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
+                    println!("Arg #0 (program name): {}", file_name);
+                } else {
+                    println!("Arg #0 (program name): <invalid>");
                 }
-                println!("Program Signature: 8276923791");
 
                 let args = parts.iter().skip(1).map(|s| OsStr::new(s)).collect::<Vec<_>>();
 
@@ -137,11 +128,7 @@ fn main() -> io::Result<()> {
                 }
                 #[cfg(not(unix))]
                 {
-                    let mut cmd = Command::new(&program_path);
-                    if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
-                        cmd.arg0(file_name);
-                    }
-                    let status = cmd
+                    let status = Command::new(&program_path)
                         .args(&args)
                         .status()
                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
