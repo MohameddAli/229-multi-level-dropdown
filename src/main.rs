@@ -18,13 +18,6 @@ fn main() {
         .read_line(&mut user_command)
         .expect("❌ فشل في قراءة الإدخال");
 
-    let trimmed = user_command.trim();
-    if trimmed.is_empty() {
-        return; // تجاهل الإدخال الفارغ
-    }
-
-    if let Some(cmd) = trimmed.split_whitespace().next() {
-        println!("{}: command not found", cmd);
-    }
+    println!("{}: command not found", user_command.trim());
     
 }
