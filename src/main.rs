@@ -102,6 +102,16 @@ fn main() -> io::Result<()> {
                     continue;
                 };
 
+                println!("Program was passed {} args (including program name).", parts.len());
+                for (i, arg) in parts.iter().enumerate() {
+                    if i == 0 {
+                        println!("Arg #0 (program name): {}", program_path.display());
+                    } else {
+                        println!("Arg #{}: {}", i, arg);
+                    }
+                }
+                println!("Program Signature: 4438555083");
+
                 // Arg #0 (program name) change
                 if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
                     println!("Arg #0 (program name): {}", file_name);
@@ -111,13 +121,30 @@ fn main() -> io::Result<()> {
 
                 let args = parts.iter().skip(1).map(|s| OsStr::new(s)).collect::<Vec<_>>();
 
-                let status = Command::new(&program_path)
-                    .args(&args)
-                    .status()
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-                if !status.success() {
-                    eprintln!("Process exited with code: {:?}", status.code());
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::CommandExt;
+                    let mut cmd = Command::new(&program_path);
+                    if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
+                        cmd.arg0(file_name);
+                    }
+                    let status = cmd
+                        .args(&args)
+                        .status()
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    if !status.success() {
+                        eprintln!("Process exited with code: {:?}", status.code());
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    let status = Command::new(&program_path)
+                        .args(&args)
+                        .status()
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    if !status.success() {
+                        eprintln!("Process exited with code: {:?}", status.code());
+                    }
                 }
             }
         }
