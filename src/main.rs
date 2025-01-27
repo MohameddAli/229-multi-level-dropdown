@@ -39,6 +39,53 @@ fn find_in_path(command: &str) -> Option<PathBuf> {
     })
 }
 
+fn parse_arguments(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let chars: Vec<char> = input.chars().collect();
+    let len = chars.len();
+    let mut pos = 0;
+
+    while pos < len {
+        // Skip whitespace
+        while pos < len && chars[pos].is_whitespace() {
+            pos += 1;
+        }
+        if pos >= len {
+            break;
+        }
+
+        let mut buffer = String::new();
+        let mut in_quotes = false;
+
+        while pos < len {
+            let c = chars[pos];
+            if in_quotes {
+                if c == '\'' {
+                    in_quotes = false;
+                    pos += 1;
+                } else {
+                    buffer.push(c);
+                    pos += 1;
+                }
+            } else {
+                if c == '\'' {
+                    in_quotes = true;
+                    pos += 1;
+                } else if c.is_whitespace() {
+                    break;
+                } else {
+                    buffer.push(c);
+                    pos += 1;
+                }
+            }
+        }
+
+        tokens.push(buffer);
+    }
+
+    tokens
+}
+
 fn main() -> io::Result<()> {
     let builtins: HashSet<&str> = ["exit", "echo", "type", "pwd", "cd"].iter().cloned().collect();
 
@@ -61,10 +108,13 @@ fn main() -> io::Result<()> {
             continue;
         }
 
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        let command = parts[0];
+        let parts = parse_arguments(trimmed);
+        if parts.is_empty() {
+            continue;
+        }
+        let command = &parts[0];
 
-        match command {
+        match command.as_str() {
             "exit" => {
                 let exit_code = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
                 process::exit(exit_code);
@@ -77,8 +127,8 @@ fn main() -> io::Result<()> {
                 if parts.len() < 2 {
                     continue;
                 }
-                let cmd_to_check = parts[1];
-                if builtins.contains(cmd_to_check) {
+                let cmd_to_check = &parts[1];
+                if builtins.contains(cmd_to_check.as_str()) {
                     println!("{} is a shell builtin", cmd_to_check);
                     continue;
                 }
@@ -98,7 +148,7 @@ fn main() -> io::Result<()> {
                     eprintln!("cd: expected 1 argument, got {}", parts.len() - 1);
                     continue;
                 }
-                let new_dir = parts[1];
+                let new_dir = &parts[1];
                 let path = if new_dir == "~" {
                     match env::var_os("HOME") {
                         Some(home) => PathBuf::from(home),
@@ -122,7 +172,7 @@ fn main() -> io::Result<()> {
                 }
             }
             _ => {
-                if builtins.contains(command) {
+                if builtins.contains(command.as_str()) {
                     println!("{}: command not found", command);
                     continue;
                 }
@@ -137,7 +187,7 @@ fn main() -> io::Result<()> {
                 let args = parts
                     .iter()
                     .skip(1)
-                    .map(|s| OsStr::new(s))
+                    .map(|s| OsStr::new(s.as_str()))
                     .collect::<Vec<_>>();
 
                 #[cfg(unix)]
