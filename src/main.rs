@@ -40,8 +40,7 @@ fn find_in_path(command: &str) -> Option<PathBuf> {
 }
 
 fn main() -> io::Result<()> {
-    // Add "pwd" to the list of builtin commands
-    let builtins: HashSet<&str> = ["exit", "echo", "type", "pwd"].iter().cloned().collect();
+    let builtins: HashSet<&str> = ["exit", "echo", "type", "pwd", "cd"].iter().cloned().collect();
 
     loop {
         print!("$ ");
@@ -90,10 +89,27 @@ fn main() -> io::Result<()> {
                     println!("{}: not found", cmd_to_check);
                 }
             }
-            // Handle the "pwd" command
             "pwd" => {
                 let current_dir = env::current_dir()?;
                 println!("{}", current_dir.display());
+            }
+            "cd" => {
+                if parts.len() != 2 {
+                    eprintln!("cd: expected 1 argument, got {}", parts.len() - 1);
+                    continue;
+                }
+                let new_dir = parts[1];
+                let path = Path::new(new_dir);
+                match env::set_current_dir(&path) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        if e.kind() == io::ErrorKind::NotFound {
+                            eprintln!("cd: {}: No such file or directory", new_dir);
+                        } else {
+                            eprintln!("cd: {}", e);
+                        }
+                    }
+                }
             }
             _ => {
                 if builtins.contains(command) {
@@ -108,7 +124,11 @@ fn main() -> io::Result<()> {
                     continue;
                 };
 
-                let args = parts.iter().skip(1).map(|s| OsStr::new(s)).collect::<Vec<_>>();
+                let args = parts
+                    .iter()
+                    .skip(1)
+                    .map(|s| OsStr::new(s))
+                    .collect::<Vec<_>>();
 
                 #[cfg(unix)]
                 {
