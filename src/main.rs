@@ -561,7 +561,9 @@ fn main() -> io::Result<()> {
                     }
 
                     match cmd.status() {
-                        Ok(_status) => {}
+                        Ok(_status) => {
+                            io::stdout().flush()?;
+                        }
                         Err(e) => {
                             let msg = format!("{}: command not found", command);
                             if let Some(file) = &mut stderr_file {
