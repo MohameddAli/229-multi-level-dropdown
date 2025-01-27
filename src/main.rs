@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::env;
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
@@ -53,7 +53,6 @@ fn parse_arguments(input: &str) -> Vec<String> {
     }
 
     while pos < len {
-        // Skip whitespace
         while pos < len && chars[pos].is_whitespace() {
             pos += 1;
         }
@@ -75,13 +74,11 @@ fn parse_arguments(input: &str) -> Vec<String> {
                         quote_state = QuoteState::Double;
                         pos += 1;
                     } else if c == '\\' {
-                        // Handle backslash escape outside quotes
-                        pos += 1; // Skip the backslash
+                        pos += 1;
                         if pos < len {
                             buffer.push(chars[pos]);
                             pos += 1;
                         } else {
-                            // Backslash at the end of input, add it
                             buffer.push('\\');
                         }
                     } else if c.is_whitespace() {
@@ -102,20 +99,18 @@ fn parse_arguments(input: &str) -> Vec<String> {
                 }
                 QuoteState::Double => {
                     if c == '\\' {
-                        pos += 1; // Skip the backslash
+                        pos += 1;
                         if pos < len {
                             let next_c = chars[pos];
                             if matches!(next_c, '\\' | '$' | '"' | '\n') {
                                 buffer.push(next_c);
                                 pos += 1;
                             } else {
-                                // Add the backslash and the next character
                                 buffer.push('\\');
                                 buffer.push(next_c);
                                 pos += 1;
                             }
                         } else {
-                            // Backslash at the end, add it
                             buffer.push('\\');
                         }
                     } else if c == '"' {
@@ -158,25 +153,57 @@ fn main() -> io::Result<()> {
         }
 
         let parts = parse_arguments(trimmed);
-        if parts.is_empty() {
+        let mut command_args = Vec::new();
+        let mut stdout_redirect = None;
+
+        let mut i = 0;
+        while i < parts.len() {
+            if parts[i] == ">" || parts[i] == "1>" {
+                if i + 1 < parts.len() {
+                    stdout_redirect = Some(parts[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            } else {
+                command_args.push(parts[i].clone());
+                i += 1;
+            }
+        }
+
+        if command_args.is_empty() {
             continue;
         }
-        let command = &parts[0];
+        let command = &command_args[0];
 
         match command.as_str() {
             "exit" => {
-                let exit_code = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let exit_code = command_args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
                 process::exit(exit_code);
             }
             "echo" => {
-                let output = parts[1..].join(" ");
-                println!("{}", output);
+                let output = command_args[1..].join(" ");
+                if let Some(file_path) = stdout_redirect {
+                    match File::create(&file_path) {
+                        Ok(mut file) => {
+                            writeln!(file, "{}", output).map_err(|e| {
+                                eprintln!("Error writing to file: {}", e);
+                                io::Error::new(io::ErrorKind::Other, e)
+                            })?;
+                        }
+                        Err(e) => {
+                            eprintln!("Error creating file: {}", e);
+                        }
+                    }
+                } else {
+                    println!("{}", output);
+                }
             }
             "type" => {
-                if parts.len() < 2 {
+                if command_args.len() < 2 {
                     continue;
                 }
-                let cmd_to_check = &parts[1];
+                let cmd_to_check = &command_args[1];
                 if builtins.contains(cmd_to_check.as_str()) {
                     println!("{} is a shell builtin", cmd_to_check);
                     continue;
@@ -190,14 +217,28 @@ fn main() -> io::Result<()> {
             }
             "pwd" => {
                 let current_dir = env::current_dir()?;
-                println!("{}", current_dir.display());
+                if let Some(file_path) = stdout_redirect {
+                    match File::create(&file_path) {
+                        Ok(mut file) => {
+                            writeln!(file, "{}", current_dir.display()).map_err(|e| {
+                                eprintln!("Error writing to file: {}", e);
+                                io::Error::new(io::ErrorKind::Other, e)
+                            })?;
+                        }
+                        Err(e) => {
+                            eprintln!("Error creating file: {}", e);
+                        }
+                    }
+                } else {
+                    println!("{}", current_dir.display());
+                }
             }
             "cd" => {
-                if parts.len() != 2 {
-                    eprintln!("cd: expected 1 argument, got {}", parts.len() - 1);
+                if command_args.len() != 2 {
+                    eprintln!("cd: expected 1 argument, got {}", command_args.len() - 1);
                     continue;
                 }
-                let new_dir = &parts[1];
+                let new_dir = &command_args[1];
                 let path = if new_dir == "~" {
                     match env::var_os("HOME") {
                         Some(home) => PathBuf::from(home),
@@ -226,78 +267,57 @@ fn main() -> io::Result<()> {
                     continue;
                 }
 
-                // Try to treat the command as a direct path first
                 let program_path = PathBuf::from(command);
-                if is_executable(&program_path) {
-                    // If it's a valid executable, run it directly
-                    let args = parts
+                let program_path_exists = program_path.exists();
+                let is_exec = is_executable(&program_path);
+
+                let path = if program_path_exists && is_exec {
+                    Some(program_path)
+                } else {
+                    find_in_path(command)
+                };
+
+                if let Some(path) = path {
+                    let args = command_args[1..]
                         .iter()
-                        .skip(1)
                         .map(|s| OsStr::new(s.as_str()))
                         .collect::<Vec<_>>();
+
+                    let mut cmd = Command::new(&path);
+                    cmd.args(args);
+
+                    if let Some(file_path) = &stdout_redirect {
+                        match File::create(file_path) {
+                            Ok(file) => {
+                                cmd.stdout(file);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to create file '{}': {}", file_path, e);
+                                continue;
+                            }
+                        }
+                    }
 
                     #[cfg(unix)]
                     {
                         use std::os::unix::process::CommandExt;
-                        let mut cmd = Command::new(&program_path);
-                        if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
+                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                             cmd.arg0(file_name);
                         }
-                        let status = cmd
-                            .args(&args)
-                            .status()
-                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                        if !status.success() {
-                            eprintln!("Process exited with code: {:?}", status.code());
-                        }
                     }
-                    #[cfg(not(unix))]
-                    {
-                        let status = Command::new(&program_path)
-                            .args(&args)
-                            .status()
-                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                        if !status.success() {
-                            eprintln!("Process exited with code: {:?}", status.code());
+
+                    match cmd.status() {
+                        Ok(status) => {
+                            if !status.success() {
+                                eprintln!("Process exited with code: {:?}", status.code());
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("{}: command not found", command);
                         }
                     }
                 } else {
-                    // If not a direct path, search in PATH
-                    if let Some(path) = find_in_path(command) {
-                        let args = parts
-                            .iter()
-                            .skip(1)
-                            .map(|s| OsStr::new(s.as_str()))
-                            .collect::<Vec<_>>();
-
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::process::CommandExt;
-                            let mut cmd = Command::new(&path);
-                            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                                cmd.arg0(file_name);
-                            }
-                            let status = cmd
-                                .args(&args)
-                                .status()
-                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                            if !status.success() {
-                                eprintln!("Process exited with code: {:?}", status.code());
-                            }
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            let status = Command::new(&path)
-                                .args(&args)
-                                .status()
-                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                            if !status.success() {
-                                eprintln!("Process exited with code: {:?}", status.code());
-                            }
-                        }
-                    } else {
-                        println!("{}: command not found", command);
-                    }
+                    println!("{}: command not found", command);
                 }
             }
         }
