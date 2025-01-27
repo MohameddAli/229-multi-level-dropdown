@@ -99,12 +99,22 @@ fn main() -> io::Result<()> {
                     continue;
                 }
                 let new_dir = parts[1];
-                let path = Path::new(new_dir);
+                let path = if new_dir == "~" {
+                    match env::var_os("HOME") {
+                        Some(home) => PathBuf::from(home),
+                        None => {
+                            eprintln!("cd: HOME environment variable not set");
+                            continue;
+                        }
+                    }
+                } else {
+                    PathBuf::from(new_dir)
+                };
                 match env::set_current_dir(&path) {
                     Ok(()) => {}
                     Err(e) => {
                         if e.kind() == io::ErrorKind::NotFound {
-                            eprintln!("cd: {}: No such file or directory", new_dir);
+                            eprintln!("cd: {}: No such file or directory", path.display());
                         } else {
                             eprintln!("cd: {}", e);
                         }
