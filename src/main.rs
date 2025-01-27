@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::env;
 use std::ffi::OsStr;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
@@ -132,49 +132,64 @@ fn parse_arguments(input: &str) -> Vec<String> {
 
 fn split_redirects(token: &str) -> Vec<String> {
     let mut parts = Vec::new();
-    let mut current = String::new();
-    let mut chars = token.chars().peekable();
+    let chars: Vec<char> = token.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
 
-    while let Some(c) = chars.next() {
-        if c == '1' {
-            if let Some(&next) = chars.peek() {
-                if next == '>' {
-                    if !current.is_empty() {
-                        parts.push(current.clone());
-                        current.clear();
-                    }
-                    parts.push("1>".to_string());
-                    chars.next();
-                    continue;
-                }
+    while i < len {
+        if i + 2 < len && chars[i] == '1' && chars[i + 1] == '>' && chars[i + 2] == '>' {
+            if !parts.is_empty() || !parts.is_empty() {
+                parts.push("1>>".to_string());
+            } else {
+                parts.push("1>>".to_string());
             }
-            current.push(c);
-        } else if c == '2' {
-            if let Some(&next) = chars.peek() {
-                if next == '>' {
-                    if !current.is_empty() {
-                        parts.push(current.clone());
-                        current.clear();
-                    }
-                    parts.push("2>".to_string());
-                    chars.next();
-                    continue;
-                }
+            i += 3;
+        } else if i + 1 < len && chars[i] == '1' && chars[i + 1] == '>' {
+            if !parts.is_empty() || !parts.is_empty() {
+                parts.push("1>".to_string());
+            } else {
+                parts.push("1>".to_string());
             }
-            current.push(c);
-        } else if c == '>' {
-            if !current.is_empty() {
-                parts.push(current.clone());
-                current.clear();
+            i += 2;
+        } else if i + 2 < len && chars[i] == '2' && chars[i + 1] == '>' && chars[i + 2] == '>' {
+            if !parts.is_empty() || !parts.is_empty() {
+                parts.push("2>>".to_string());
+            } else {
+                parts.push("2>>".to_string());
             }
+            i += 3;
+        } else if i + 1 < len && chars[i] == '2' && chars[i + 1] == '>' {
+            if !parts.is_empty() || !parts.is_empty() {
+                parts.push("2>".to_string());
+            } else {
+                parts.push("2>".to_string());
+            }
+            i += 2;
+        } else if i + 1 < len && chars[i] == '>' && chars[i + 1] == '>' {
+            if !parts.is_empty() || !parts.is_empty() {
+                parts.push(">>".to_string());
+            } else {
+                parts.push(">>".to_string());
+            }
+            i += 2;
+        } else if chars[i] == '>' {
             parts.push(">".to_string());
+            i += 1;
         } else {
-            current.push(c);
+            let mut current = String::new();
+            while i < len
+                && !(chars[i] == '>'
+                    || chars[i] == '1'
+                    || chars[i] == '2'
+                    || (i + 1 < len && chars[i] == '>' && chars[i + 1] == '>'))
+            {
+                current.push(chars[i]);
+                i += 1;
+            }
+            if !current.is_empty() {
+                parts.push(current);
+            }
         }
-    }
-
-    if !current.is_empty() {
-        parts.push(current);
     }
 
     parts
@@ -209,28 +224,48 @@ fn main() -> io::Result<()> {
             .collect::<Vec<_>>();
 
         let mut command_args = Vec::new();
-        let mut stdout_redirect = None;
-        let mut stderr_redirect = None;
+        let mut stdout_redirect = None; // (path, append)
+        let mut stderr_redirect = None; // (path, append)
 
         let mut i = 0;
         while i < parts.len() {
-            if parts[i] == ">" || parts[i] == "1>" {
-                if i + 1 < parts.len() {
-                    stdout_redirect = Some(parts[i + 1].clone());
-                    i += 2;
-                } else {
+            match parts[i].as_str() {
+                ">" | "1>" => {
+                    if i + 1 < parts.len() {
+                        stdout_redirect = Some((parts[i + 1].clone(), false));
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                ">>" | "1>>" => {
+                    if i + 1 < parts.len() {
+                        stdout_redirect = Some((parts[i + 1].clone(), true));
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                "2>" => {
+                    if i + 1 < parts.len() {
+                        stderr_redirect = Some((parts[i + 1].clone(), false));
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                "2>>" => {
+                    if i + 1 < parts.len() {
+                        stderr_redirect = Some((parts[i + 1].clone(), true));
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                _ => {
+                    command_args.push(parts[i].clone());
                     i += 1;
                 }
-            } else if parts[i] == "2>" {
-                if i + 1 < parts.len() {
-                    stderr_redirect = Some(parts[i + 1].clone());
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            } else {
-                command_args.push(parts[i].clone());
-                i += 1;
             }
         }
 
@@ -239,16 +274,23 @@ fn main() -> io::Result<()> {
         }
         let command = &command_args[0];
 
-        let mut stderr_file = if let Some(path) = &stderr_redirect {
-            match File::create(path) {
-                Ok(file) => Some(file),
-                Err(e) => {
-                    eprintln!("Failed to create stderr file '{}': {}", path, e);
-                    None
+        let mut stderr_file = match &stderr_redirect {
+            Some((path, append)) => {
+                let file = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .append(*append)
+                    .truncate(!*append)
+                    .open(path);
+                match file {
+                    Ok(f) => Some(f),
+                    Err(e) => {
+                        eprintln!("Failed to create stderr file '{}': {}", path, e);
+                        None
+                    }
                 }
             }
-        } else {
-            None
+            None => None,
         };
 
         match command.as_str() {
@@ -258,28 +300,31 @@ fn main() -> io::Result<()> {
             }
             "echo" => {
                 let output = command_args[1..].join(" ");
-                if let Some(file_path) = stdout_redirect {
-                    match File::create(&file_path) {
-                        Ok(mut file) => {
-                            writeln!(file, "{}", output).map_err(|e| {
-                                let msg = format!("Error writing to file: {}", e);
-                                if let Some(file) = &mut stderr_file {
-                                    writeln!(file, "{}", msg).ok();
-                                } else {
-                                    eprintln!("{}", msg);
-                                }
-                                io::Error::new(io::ErrorKind::Other, e)
-                            })?;
-                        }
-                        Err(e) => {
-                            let msg = format!("Error creating file: {}", e);
+                if let Some((file_path, append)) = &stdout_redirect {
+                    let mut file = OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .append(*append)
+                        .truncate(!*append)
+                        .open(file_path)
+                        .map_err(|e| {
+                            let msg = format!("Error opening file: {}", e);
                             if let Some(file) = &mut stderr_file {
                                 writeln!(file, "{}", msg).ok();
                             } else {
                                 eprintln!("{}", msg);
                             }
+                            io::Error::new(io::ErrorKind::Other, e)
+                        })?;
+                    writeln!(file, "{}", output).map_err(|e| {
+                        let msg = format!("Error writing to file: {}", e);
+                        if let Some(file) = &mut stderr_file {
+                            writeln!(file, "{}", msg).ok();
+                        } else {
+                            eprintln!("{}", msg);
                         }
-                    }
+                        io::Error::new(io::ErrorKind::Other, e)
+                    })?;
                 } else {
                     println!("{}", output);
                 }
@@ -290,23 +335,15 @@ fn main() -> io::Result<()> {
                 }
                 let cmd_to_check = &command_args[1];
                 if builtins.contains(cmd_to_check.as_str()) {
-                    println!("{} is a shell builtin", cmd_to_check);
-                    continue;
-                }
-
-                if let Some(path) = find_in_path(cmd_to_check) {
-                    println!("{} is {}", cmd_to_check, path.display());
-                } else {
-                    println!("{}: not found", cmd_to_check);
-                }
-            }
-            "pwd" => {
-                let current_dir = env::current_dir()?;
-                if let Some(file_path) = stdout_redirect {
-                    match File::create(&file_path) {
-                        Ok(mut file) => {
-                            writeln!(file, "{}", current_dir.display()).map_err(|e| {
-                                let msg = format!("Error writing to file: {}", e);
+                    if let Some((file_path, append)) = &stdout_redirect {
+                        let mut file = OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .append(*append)
+                            .truncate(!*append)
+                            .open(file_path)
+                            .map_err(|e| {
+                                let msg = format!("Error opening file: {}", e);
                                 if let Some(file) = &mut stderr_file {
                                     writeln!(file, "{}", msg).ok();
                                 } else {
@@ -314,16 +351,108 @@ fn main() -> io::Result<()> {
                                 }
                                 io::Error::new(io::ErrorKind::Other, e)
                             })?;
-                        }
-                        Err(e) => {
-                            let msg = format!("Error creating file: {}", e);
+                        writeln!(file, "{} is a shell builtin", cmd_to_check).map_err(|e| {
+                            let msg = format!("Error writing to file: {}", e);
                             if let Some(file) = &mut stderr_file {
                                 writeln!(file, "{}", msg).ok();
                             } else {
                                 eprintln!("{}", msg);
                             }
-                        }
+                            io::Error::new(io::ErrorKind::Other, e)
+                        })?;
+                    } else {
+                        println!("{} is a shell builtin", cmd_to_check);
                     }
+                    continue;
+                }
+
+                if let Some(path) = find_in_path(cmd_to_check) {
+                    if let Some((file_path, append)) = &stdout_redirect {
+                        let mut file = OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .append(*append)
+                            .truncate(!*append)
+                            .open(file_path)
+                            .map_err(|e| {
+                                let msg = format!("Error opening file: {}", e);
+                                if let Some(file) = &mut stderr_file {
+                                    writeln!(file, "{}", msg).ok();
+                                } else {
+                                    eprintln!("{}", msg);
+                                }
+                                io::Error::new(io::ErrorKind::Other, e)
+                            })?;
+                        writeln!(file, "{} is {}", cmd_to_check, path.display()).map_err(|e| {
+                            let msg = format!("Error writing to file: {}", e);
+                            if let Some(file) = &mut stderr_file {
+                                writeln!(file, "{}", msg).ok();
+                            } else {
+                                eprintln!("{}", msg);
+                            }
+                            io::Error::new(io::ErrorKind::Other, e)
+                        })?;
+                    } else {
+                        println!("{} is {}", cmd_to_check, path.display());
+                    }
+                } else {
+                    if let Some((file_path, append)) = &stdout_redirect {
+                        let mut file = OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .append(*append)
+                            .truncate(!*append)
+                            .open(file_path)
+                            .map_err(|e| {
+                                let msg = format!("Error opening file: {}", e);
+                                if let Some(file) = &mut stderr_file {
+                                    writeln!(file, "{}", msg).ok();
+                                } else {
+                                    eprintln!("{}", msg);
+                                }
+                                io::Error::new(io::ErrorKind::Other, e)
+                            })?;
+                        writeln!(file, "{}: not found", cmd_to_check).map_err(|e| {
+                            let msg = format!("Error writing to file: {}", e);
+                            if let Some(file) = &mut stderr_file {
+                                writeln!(file, "{}", msg).ok();
+                            } else {
+                                eprintln!("{}", msg);
+                            }
+                            io::Error::new(io::ErrorKind::Other, e)
+                        })?;
+                    } else {
+                        println!("{}: not found", cmd_to_check);
+                    }
+                }
+            }
+            "pwd" => {
+                let current_dir = env::current_dir()?;
+                if let Some((file_path, append)) = &stdout_redirect {
+                    let mut file = OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .append(*append)
+                        .truncate(!*append)
+                        .open(file_path)
+                        .map_err(|e| {
+                            let msg = format!("Error opening file: {}", e);
+                            if let Some(file) = &mut stderr_file {
+                                writeln!(file, "{}", msg).ok();
+                            } else {
+                                eprintln!("{}", msg);
+                            }
+                            io::Error::new(io::ErrorKind::Other, e)
+                        })?;
+                    writeln!(file, "{}", current_dir.display()).map_err(|e| {
+                        let msg = format!("Error writing to file: {}", e);
+                        if let Some(file) = &mut stderr_file {
+                            writeln!(file, "{}", msg).ok();
+                        } else {
+                            eprintln!("{}", msg);
+                        }
+                        io::Error::new(io::ErrorKind::Other, e)
+                    })?;
                 } else {
                     println!("{}", current_dir.display());
                 }
@@ -401,28 +530,32 @@ fn main() -> io::Result<()> {
                     let mut cmd = Command::new(&path);
                     cmd.args(args);
 
-                    if let Some(file_path) = &stdout_redirect {
-                        match File::create(file_path) {
-                            Ok(file) => {
-                                cmd.stdout(file);
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to create stdout file '{}': {}", file_path, e);
-                                continue;
-                            }
-                        };
+                    if let Some((file_path, append)) = &stdout_redirect {
+                        let file = OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .append(*append)
+                            .truncate(!*append)
+                            .open(file_path)
+                            .map_err(|e| {
+                                eprintln!("Failed to open stdout file '{}': {}", file_path, e);
+                                e
+                            })?;
+                        cmd.stdout(file);
                     }
 
-                    if let Some(file_path) = &stderr_redirect {
-                        match File::create(file_path) {
-                            Ok(file) => {
-                                cmd.stderr(file);
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to create stderr file '{}': {}", file_path, e);
-                                continue;
-                            }
-                        };
+                    if let Some((file_path, append)) = &stderr_redirect {
+                        let file = OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .append(*append)
+                            .truncate(!*append)
+                            .open(file_path)
+                            .map_err(|e| {
+                                eprintln!("Failed to open stderr file '{}': {}", file_path, e);
+                                e
+                            })?;
+                        cmd.stderr(file);
                     }
 
                     #[cfg(unix)]
