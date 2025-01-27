@@ -226,42 +226,77 @@ fn main() -> io::Result<()> {
                     continue;
                 }
 
-                let program_path = if let Some(path) = find_in_path(command) {
-                    path
+                // Try to treat the command as a direct path first
+                let program_path = PathBuf::from(command);
+                if is_executable(&program_path) {
+                    // If it's a valid executable, run it directly
+                    let args = parts
+                        .iter()
+                        .skip(1)
+                        .map(|s| OsStr::new(s.as_str()))
+                        .collect::<Vec<_>>();
+
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::CommandExt;
+                        let mut cmd = Command::new(&program_path);
+                        if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
+                            cmd.arg0(file_name);
+                        }
+                        let status = cmd
+                            .args(&args)
+                            .status()
+                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                        if !status.success() {
+                            eprintln!("Process exited with code: {:?}", status.code());
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let status = Command::new(&program_path)
+                            .args(&args)
+                            .status()
+                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                        if !status.success() {
+                            eprintln!("Process exited with code: {:?}", status.code());
+                        }
+                    }
                 } else {
-                    println!("{}: command not found", command);
-                    continue;
-                };
+                    // If not a direct path, search in PATH
+                    if let Some(path) = find_in_path(command) {
+                        let args = parts
+                            .iter()
+                            .skip(1)
+                            .map(|s| OsStr::new(s.as_str()))
+                            .collect::<Vec<_>>();
 
-                let args = parts
-                    .iter()
-                    .skip(1)
-                    .map(|s| OsStr::new(s.as_str()))
-                    .collect::<Vec<_>>();
-
-                #[cfg(unix)]
-                {
-                    use std::os::unix::process::CommandExt;
-                    let mut cmd = Command::new(&program_path);
-                    if let Some(file_name) = program_path.file_name().and_then(|n| n.to_str()) {
-                        cmd.arg0(file_name);
-                    }
-                    let status = cmd
-                        .args(&args)
-                        .status()
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                    if !status.success() {
-                        eprintln!("Process exited with code: {:?}", status.code());
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    let status = Command::new(&program_path)
-                        .args(&args)
-                        .status()
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                    if !status.success() {
-                        eprintln!("Process exited with code: {:?}", status.code());
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::process::CommandExt;
+                            let mut cmd = Command::new(&path);
+                            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                                cmd.arg0(file_name);
+                            }
+                            let status = cmd
+                                .args(&args)
+                                .status()
+                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                            if !status.success() {
+                                eprintln!("Process exited with code: {:?}", status.code());
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            let status = Command::new(&path)
+                                .args(&args)
+                                .status()
+                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                            if !status.success() {
+                                eprintln!("Process exited with code: {:?}", status.code());
+                            }
+                        }
+                    } else {
+                        println!("{}: command not found", command);
                     }
                 }
             }
