@@ -45,6 +45,13 @@ fn parse_arguments(input: &str) -> Vec<String> {
     let len = chars.len();
     let mut pos = 0;
 
+    #[derive(PartialEq)]
+    enum QuoteState {
+        None,
+        Single,
+        Double,
+    }
+
     while pos < len {
         // Skip whitespace
         while pos < len && chars[pos].is_whitespace() {
@@ -55,27 +62,59 @@ fn parse_arguments(input: &str) -> Vec<String> {
         }
 
         let mut buffer = String::new();
-        let mut in_quotes = false;
+        let mut quote_state = QuoteState::None;
 
         while pos < len {
             let c = chars[pos];
-            if in_quotes {
-                if c == '\'' {
-                    in_quotes = false;
-                    pos += 1;
-                } else {
-                    buffer.push(c);
-                    pos += 1;
+            match quote_state {
+                QuoteState::None => {
+                    if c == '\'' {
+                        quote_state = QuoteState::Single;
+                        pos += 1;
+                    } else if c == '"' {
+                        quote_state = QuoteState::Double;
+                        pos += 1;
+                    } else if c.is_whitespace() {
+                        break;
+                    } else {
+                        buffer.push(c);
+                        pos += 1;
+                    }
                 }
-            } else {
-                if c == '\'' {
-                    in_quotes = true;
-                    pos += 1;
-                } else if c.is_whitespace() {
-                    break;
-                } else {
-                    buffer.push(c);
-                    pos += 1;
+                QuoteState::Single => {
+                    if c == '\'' {
+                        quote_state = QuoteState::None;
+                        pos += 1;
+                    } else {
+                        buffer.push(c);
+                        pos += 1;
+                    }
+                }
+                QuoteState::Double => {
+                    if c == '\\' {
+                        pos += 1; // Skip the backslash
+                        if pos < len {
+                            let next_c = chars[pos];
+                            if matches!(next_c, '\\' | '$' | '"' | '\n') {
+                                buffer.push(next_c);
+                                pos += 1;
+                            } else {
+                                // Add the backslash and the next character
+                                buffer.push('\\');
+                                buffer.push(next_c);
+                                pos += 1;
+                            }
+                        } else {
+                            // Backslash at the end, add it
+                            buffer.push('\\');
+                        }
+                    } else if c == '"' {
+                        quote_state = QuoteState::None;
+                        pos += 1;
+                    } else {
+                        buffer.push(c);
+                        pos += 1;
+                    }
                 }
             }
         }
