@@ -138,39 +138,19 @@ fn split_redirects(token: &str) -> Vec<String> {
 
     while i < len {
         if i + 2 < len && chars[i] == '1' && chars[i + 1] == '>' && chars[i + 2] == '>' {
-            if !parts.is_empty() || !parts.is_empty() {
-                parts.push("1>>".to_string());
-            } else {
-                parts.push("1>>".to_string());
-            }
+            parts.push("1>>".to_string());
             i += 3;
         } else if i + 1 < len && chars[i] == '1' && chars[i + 1] == '>' {
-            if !parts.is_empty() || !parts.is_empty() {
-                parts.push("1>".to_string());
-            } else {
-                parts.push("1>".to_string());
-            }
+            parts.push("1>".to_string());
             i += 2;
         } else if i + 2 < len && chars[i] == '2' && chars[i + 1] == '>' && chars[i + 2] == '>' {
-            if !parts.is_empty() || !parts.is_empty() {
-                parts.push("2>>".to_string());
-            } else {
-                parts.push("2>>".to_string());
-            }
+            parts.push("2>>".to_string());
             i += 3;
         } else if i + 1 < len && chars[i] == '2' && chars[i + 1] == '>' {
-            if !parts.is_empty() || !parts.is_empty() {
-                parts.push("2>".to_string());
-            } else {
-                parts.push("2>".to_string());
-            }
+            parts.push("2>".to_string());
             i += 2;
         } else if i + 1 < len && chars[i] == '>' && chars[i + 1] == '>' {
-            if !parts.is_empty() || !parts.is_empty() {
-                parts.push(">>".to_string());
-            } else {
-                parts.push(">>".to_string());
-            }
+            parts.push(">>".to_string());
             i += 2;
         } else if chars[i] == '>' {
             parts.push(">".to_string());
@@ -531,31 +511,45 @@ fn main() -> io::Result<()> {
                     cmd.args(args);
 
                     if let Some((file_path, append)) = &stdout_redirect {
-                        let file = OpenOptions::new()
+                        match OpenOptions::new()
                             .create(true)
                             .write(true)
                             .append(*append)
                             .truncate(!*append)
                             .open(file_path)
-                            .map_err(|e| {
-                                eprintln!("Failed to open stdout file '{}': {}", file_path, e);
-                                e
-                            })?;
-                        cmd.stdout(file);
+                        {
+                            Ok(file) => {
+                                cmd.stdout(file);
+                            }
+                            Err(e) => {
+                                let msg = format!("Failed to open stdout file '{}': {}", file_path, e);
+                                if let Some(file) = &mut stderr_file {
+                                    writeln!(file, "{}", msg).ok();
+                                } else {
+                                    eprintln!("{}", msg);
+                                }
+                                continue;
+                            }
+                        }
                     }
 
                     if let Some((file_path, append)) = &stderr_redirect {
-                        let file = OpenOptions::new()
+                        match OpenOptions::new()
                             .create(true)
                             .write(true)
                             .append(*append)
                             .truncate(!*append)
                             .open(file_path)
-                            .map_err(|e| {
-                                eprintln!("Failed to open stderr file '{}': {}", file_path, e);
-                                e
-                            })?;
-                        cmd.stderr(file);
+                        {
+                            Ok(file) => {
+                                cmd.stderr(file);
+                            }
+                            Err(e) => {
+                                let msg = format!("Failed to open stderr file '{}': {}", file_path, e);
+                                eprintln!("{}", msg);
+                                continue;
+                            }
+                        }
                     }
 
                     #[cfg(unix)]
