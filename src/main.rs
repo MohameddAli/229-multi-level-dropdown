@@ -348,12 +348,9 @@ fn main() -> io::Result<()> {
                         }
                     }
 
+                    // Modified section: removed exit code logging
                     match cmd.status() {
-                        Ok(status) => {
-                            if !status.success() {
-                                eprintln!("Process exited with code: {:?}", status.code());
-                            }
-                        }
+                        Ok(_status) => { /* No longer printing exit code */ }
                         Err(e) => {
                             eprintln!("{}: command not found", command);
                         }
