@@ -74,6 +74,16 @@ fn parse_arguments(input: &str) -> Vec<String> {
                     } else if c == '"' {
                         quote_state = QuoteState::Double;
                         pos += 1;
+                    } else if c == '\\' {
+                        // Handle backslash escape outside quotes
+                        pos += 1; // Skip the backslash
+                        if pos < len {
+                            buffer.push(chars[pos]);
+                            pos += 1;
+                        } else {
+                            // Backslash at the end of input, add it
+                            buffer.push('\\');
+                        }
                     } else if c.is_whitespace() {
                         break;
                     } else {
