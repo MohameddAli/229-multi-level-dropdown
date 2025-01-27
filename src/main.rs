@@ -130,6 +130,43 @@ fn parse_arguments(input: &str) -> Vec<String> {
     tokens
 }
 
+fn split_redirects(token: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = token.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '1' {
+            if let Some(&next) = chars.peek() {
+                if next == '>' {
+                    if !current.is_empty() {
+                        parts.push(current.clone());
+                        current.clear();
+                    }
+                    parts.push("1>".to_string());
+                    chars.next();
+                    continue;
+                }
+            }
+            current.push(c);
+        } else if c == '>' {
+            if !current.is_empty() {
+                parts.push(current.clone());
+                current.clear();
+            }
+            parts.push(">".to_string());
+        } else {
+            current.push(c);
+        }
+    }
+
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    parts
+}
+
 fn main() -> io::Result<()> {
     let builtins: HashSet<&str> = ["exit", "echo", "type", "pwd", "cd"].iter().cloned().collect();
 
@@ -153,6 +190,11 @@ fn main() -> io::Result<()> {
         }
 
         let parts = parse_arguments(trimmed);
+        let parts = parts
+            .into_iter()
+            .flat_map(|token| split_redirects(&token))
+            .collect::<Vec<_>>();
+
         let mut command_args = Vec::new();
         let mut stdout_redirect = None;
 
