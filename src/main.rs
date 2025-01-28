@@ -815,6 +815,8 @@ pub enum Error {
 
     Io(std::io::Error),
 
+    ReadlineError(ReadlineError),
+
 }
 
 impl From<VarError> for Error {
@@ -842,6 +844,16 @@ impl From<FromUtf8Error> for Error {
     fn from(value: FromUtf8Error) -> Self {
 
         Self::EncodingError(value)
+
+    }
+
+}
+
+impl From<ReadlineError> for Error {
+
+    fn from(value: ReadlineError) -> Self {
+
+        Self::ReadlineError(value)
 
     }
 
