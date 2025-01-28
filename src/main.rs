@@ -1,10 +1,68 @@
 use std::collections::HashSet;
-use std::env;
+use std::env::{self, VarError};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{self, Command};
+use std::process::{self, Command, Output};
+use std::string::FromUtf8Error;
+
+#[derive(Debug, PartialEq, Eq)]
+enum ShellExec {
+    PrintToStd(ShellCommand),
+    RedirectedStdOut(ShellCommand, PathBuf),
+    RedirectedStdErr(ShellCommand, PathBuf),
+    RedirectedStdOutAppend(ShellCommand, PathBuf),
+    RedirectedStdErrAppend(ShellCommand, PathBuf),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ShellCommand {
+    Exit(String),
+    Echo(String),
+    Type(String),
+    Pwd,
+    Cd(String),
+    SysProgram(String, Vec<String>),
+    Empty,
+    Invalid,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CommandOutput {
+    StdOut(String),
+    StdErr(String),
+    Wrapped(String, Output),
+    Noop,
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug)]
+pub enum Error {
+    InvalidCommand,
+    EncodingError(FromUtf8Error),
+    EnvVarError(VarError),
+    Io(std::io::Error),
+}
+
+impl From<VarError> for Error {
+    fn from(value: VarError) -> Self {
+        Self::EnvVarError(value)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<FromUtf8Error> for Error {
+    fn from(value: FromUtf8Error) -> Self {
+        Self::EncodingError(value)
+    }
+}
 
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
@@ -175,8 +233,96 @@ fn split_redirects(token: &str) -> Vec<String> {
     parts
 }
 
-fn main() -> io::Result<()> {
-    let builtins: HashSet<&str> = ["exit", "echo", "type", "pwd", "cd"].iter().cloned().collect();
+fn handle_command_output(output: CommandOutput, stdout_file: Option<&mut File>, stderr_file: Option<&mut File>) -> Result<()> {
+    match output {
+        CommandOutput::StdOut(s) => {
+            if let Some(file) = stdout_file {
+                writeln!(file, "{}", s)?;
+            } else {
+                println!("{}", s);
+            }
+        }
+        CommandOutput::StdErr(s) => {
+            if let Some(file) = stderr_file {
+                writeln!(file, "{}", s)?;
+            } else {
+                eprintln!("{}", s);
+            }
+        }
+        CommandOutput::Wrapped(cmd, output) => {
+            if !output.stdout.is_empty() {
+                let stdout_str = String::from_utf8(output.stdout)?.trim().to_string();
+                if let Some(file) = stdout_file {
+                    writeln!(file, "{}", stdout_str)?;
+                } else {
+                    println!("{}", stdout_str);
+                }
+            }
+            if !output.stderr.is_empty() {
+                let stderr_str = String::from_utf8(output.stderr)?.trim().to_string();
+                if let Some(file) = stderr_file {
+                    writeln!(file, "{}{}", cmd, stderr_str)?;
+                } else {
+                    eprintln!("{}{}", cmd, stderr_str);
+                }
+            }
+        }
+        CommandOutput::Noop => {}
+    }
+    Ok(())
+}
+
+fn execute_shell_command(command: ShellCommand, path: &str, home: &str) -> Result<CommandOutput> {
+    match command {
+        ShellCommand::Exit(code) => {
+            let exit_code = code.parse().unwrap_or(0);
+            process::exit(exit_code);
+        }
+        ShellCommand::Echo(s) => Ok(CommandOutput::StdOut(s)),
+        ShellCommand::Type(cmd) => {
+            let builtins: HashSet<&str> = ["exit", "echo", "type", "pwd", "cd"].iter().cloned().collect();
+            if builtins.contains(cmd.as_str()) {
+                Ok(CommandOutput::StdOut(format!("{} is a shell builtin", cmd)))
+            } else if let Some(path) = find_in_path(&cmd) {
+                Ok(CommandOutput::StdOut(format!("{} is {}", cmd, path.display())))
+            } else {
+                Ok(CommandOutput::StdOut(format!("{}: not found", cmd)))
+            }
+        }
+        ShellCommand::Pwd => {
+            let current_dir = env::current_dir()?;
+            Ok(CommandOutput::StdOut(format!("{}", current_dir.display())))
+        }
+        ShellCommand::Cd(dir) => {
+            let path = if dir == "~" {
+                PathBuf::from(home)
+            } else {
+                PathBuf::from(dir)
+            };
+            
+            match env::set_current_dir(&path) {
+                Ok(()) => Ok(CommandOutput::Noop),
+                Err(e) => Ok(CommandOutput::StdErr(format!("cd: {}: {}", path.display(), e)))
+            }
+        }
+        ShellCommand::SysProgram(cmd, args) => {
+            if let Some(program_path) = find_in_path(&cmd) {
+                let output = Command::new(&program_path)
+                    .args(&args)
+                    .output()?;
+                Ok(CommandOutput::Wrapped(cmd, output))
+            } else {
+                Ok(CommandOutput::StdErr(format!("{}: command not found", cmd)))
+            }
+        }
+        ShellCommand::Empty => Ok(CommandOutput::Noop),
+        ShellCommand::Invalid => Err(Error::InvalidCommand),
+    }
+}
+
+fn main() -> Result<()> {
+    let home = env::var("HOME")?;
+    let path = env::var("PATH")?;
 
     loop {
         print!("$ ");
@@ -203,392 +349,121 @@ fn main() -> io::Result<()> {
             .flat_map(|token| split_redirects(&token))
             .collect::<Vec<_>>();
 
-        let mut command_args = Vec::new();
-        let mut stdout_redirect = None; // (path, append)
-        let mut stderr_redirect = None; // (path, append)
-
-        let mut i = 0;
-        while i < parts.len() {
-            match parts[i].as_str() {
-                ">" | "1>" => {
-                    if i + 1 < parts.len() {
-                        stdout_redirect = Some((parts[i + 1].clone(), false));
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                ">>" | "1>>" => {
-                    if i + 1 < parts.len() {
-                        stdout_redirect = Some((parts[i + 1].clone(), true));
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                "2>" => {
-                    if i + 1 < parts.len() {
-                        stderr_redirect = Some((parts[i + 1].clone(), false));
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                "2>>" => {
-                    if i + 1 < parts.len() {
-                        stderr_redirect = Some((parts[i + 1].clone(), true));
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                _ => {
-                    command_args.push(parts[i].clone());
-                    i += 1;
-                }
+        let shell_exec = parse_shell_exec(&parts);
+        
+        match shell_exec {
+            ShellExec::PrintToStd(cmd) => {
+                let output = execute_shell_command(cmd, &path, &home)?;
+                handle_command_output(output, None, None)?;
             }
-        }
-
-        if command_args.is_empty() {
-            continue;
-        }
-        let command = &command_args[0];
-
-        let mut stderr_file = match &stderr_redirect {
-            Some((path, append)) => {
-                let file = OpenOptions::new()
+            ShellExec::RedirectedStdOut(cmd, file_path) => {
+                let mut file = OpenOptions::new()
                     .create(true)
                     .write(true)
-                    .append(*append)
-                    .truncate(!*append)
-                    .open(path);
-                match file {
-                    Ok(f) => Some(f),
-                    Err(e) => {
-                        eprintln!("Failed to create stderr file '{}': {}", path, e);
-                        None
-                    }
-                }
+                    .truncate(true)
+                    .open(&file_path)?;
+                let output = execute_shell_command(cmd, &path, &home)?;
+                handle_command_output(output, Some(&mut file), None)?;
             }
-            None => None,
-        };
-
-        match command.as_str() {
-            "exit" => {
-                let exit_code = command_args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-                process::exit(exit_code);
+            ShellExec::RedirectedStdOutAppend(cmd, file_path) => {
+                let mut file = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .append(true)
+                    .open(&file_path)?;
+                let output = execute_shell_command(cmd, &path, &home)?;
+                handle_command_output(output, Some(&mut file), None)?;
             }
-            "echo" => {
-                let output = command_args[1..].join(" ");
-                if let Some((file_path, append)) = &stdout_redirect {
-                    let mut file = OpenOptions::new()
-                        .create(true)
-                        .write(true)
-                        .append(*append)
-                        .truncate(!*append)
-                        .open(file_path)
-                        .map_err(|e| {
-                            let msg = format!("Error opening file: {}", e);
-                            if let Some(file) = &mut stderr_file {
-                                writeln!(file, "{}", msg).ok();
-                            } else {
-                                eprintln!("{}", msg);
-                            }
-                            io::Error::new(io::ErrorKind::Other, e)
-                        })?;
-                    writeln!(file, "{}", output).map_err(|e| {
-                        let msg = format!("Error writing to file: {}", e);
-                        if let Some(file) = &mut stderr_file {
-                            writeln!(file, "{}", msg).ok();
-                        } else {
-                            eprintln!("{}", msg);
-                        }
-                        io::Error::new(io::ErrorKind::Other, e)
-                    })?;
-                } else {
-                    println!("{}", output);
-                }
+            ShellExec::RedirectedStdErr(cmd, file_path) => {
+                let mut file = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&file_path)?;
+                let output = execute_shell_command(cmd, &path, &home)?;
+                handle_command_output(output, None, Some(&mut file))?;
             }
-            "type" => {
-                if command_args.len() < 2 {
-                    continue;
-                }
-                let cmd_to_check = &command_args[1];
-                if builtins.contains(cmd_to_check.as_str()) {
-                    if let Some((file_path, append)) = &stdout_redirect {
-                        let mut file = OpenOptions::new()
-                            .create(true)
-                            .write(true)
-                            .append(*append)
-                            .truncate(!*append)
-                            .open(file_path)
-                            .map_err(|e| {
-                                let msg = format!("Error opening file: {}", e);
-                                if let Some(file) = &mut stderr_file {
-                                    writeln!(file, "{}", msg).ok();
-                                } else {
-                                    eprintln!("{}", msg);
-                                }
-                                io::Error::new(io::ErrorKind::Other, e)
-                            })?;
-                        writeln!(file, "{} is a shell builtin", cmd_to_check).map_err(|e| {
-                            let msg = format!("Error writing to file: {}", e);
-                            if let Some(file) = &mut stderr_file {
-                                writeln!(file, "{}", msg).ok();
-                            } else {
-                                eprintln!("{}", msg);
-                            }
-                            io::Error::new(io::ErrorKind::Other, e)
-                        })?;
-                    } else {
-                        println!("{} is a shell builtin", cmd_to_check);
-                    }
-                    continue;
-                }
-
-                if let Some(path) = find_in_path(cmd_to_check) {
-                    if let Some((file_path, append)) = &stdout_redirect {
-                        let mut file = OpenOptions::new()
-                            .create(true)
-                            .write(true)
-                            .append(*append)
-                            .truncate(!*append)
-                            .open(file_path)
-                            .map_err(|e| {
-                                let msg = format!("Error opening file: {}", e);
-                                if let Some(file) = &mut stderr_file {
-                                    writeln!(file, "{}", msg).ok();
-                                } else {
-                                    eprintln!("{}", msg);
-                                }
-                                io::Error::new(io::ErrorKind::Other, e)
-                            })?;
-                        writeln!(file, "{} is {}", cmd_to_check, path.display()).map_err(|e| {
-                            let msg = format!("Error writing to file: {}", e);
-                            if let Some(file) = &mut stderr_file {
-                                writeln!(file, "{}", msg).ok();
-                            } else {
-                                eprintln!("{}", msg);
-                            }
-                            io::Error::new(io::ErrorKind::Other, e)
-                        })?;
-                    } else {
-                        println!("{} is {}", cmd_to_check, path.display());
-                    }
-                } else {
-                    if let Some((file_path, append)) = &stdout_redirect {
-                        let mut file = OpenOptions::new()
-                            .create(true)
-                            .write(true)
-                            .append(*append)
-                            .truncate(!*append)
-                            .open(file_path)
-                            .map_err(|e| {
-                                let msg = format!("Error opening file: {}", e);
-                                if let Some(file) = &mut stderr_file {
-                                    writeln!(file, "{}", msg).ok();
-                                } else {
-                                    eprintln!("{}", msg);
-                                }
-                                io::Error::new(io::ErrorKind::Other, e)
-                            })?;
-                        writeln!(file, "{}: not found", cmd_to_check).map_err(|e| {
-                            let msg = format!("Error writing to file: {}", e);
-                            if let Some(file) = &mut stderr_file {
-                                writeln!(file, "{}", msg).ok();
-                            } else {
-                                eprintln!("{}", msg);
-                            }
-                            io::Error::new(io::ErrorKind::Other, e)
-                        })?;
-                    } else {
-                        println!("{}: not found", cmd_to_check);
-                    }
-                }
-            }
-            "pwd" => {
-                let current_dir = env::current_dir()?;
-                if let Some((file_path, append)) = &stdout_redirect {
-                    let mut file = OpenOptions::new()
-                        .create(true)
-                        .write(true)
-                        .append(*append)
-                        .truncate(!*append)
-                        .open(file_path)
-                        .map_err(|e| {
-                            let msg = format!("Error opening file: {}", e);
-                            if let Some(file) = &mut stderr_file {
-                                writeln!(file, "{}", msg).ok();
-                            } else {
-                                eprintln!("{}", msg);
-                            }
-                            io::Error::new(io::ErrorKind::Other, e)
-                        })?;
-                    writeln!(file, "{}", current_dir.display()).map_err(|e| {
-                        let msg = format!("Error writing to file: {}", e);
-                        if let Some(file) = &mut stderr_file {
-                            writeln!(file, "{}", msg).ok();
-                        } else {
-                            eprintln!("{}", msg);
-                        }
-                        io::Error::new(io::ErrorKind::Other, e)
-                    })?;
-                } else {
-                    println!("{}", current_dir.display());
-                }
-            }
-            "cd" => {
-                if command_args.len() != 2 {
-                    let msg = format!("cd: expected 1 argument, got {}", command_args.len() - 1);
-                    if let Some(file) = &mut stderr_file {
-                        writeln!(file, "{}", msg).ok();
-                    } else {
-                        eprintln!("{}", msg);
-                    }
-                    continue;
-                }
-                let new_dir = &command_args[1];
-                let path = if new_dir == "~" {
-                    match env::var_os("HOME") {
-                        Some(home) => PathBuf::from(home),
-                        None => {
-                            let msg = "cd: HOME environment variable not set";
-                            if let Some(file) = &mut stderr_file {
-                                writeln!(file, "{}", msg).ok();
-                            } else {
-                                eprintln!("{}", msg);
-                            }
-                            continue;
-                        }
-                    }
-                } else {
-                    PathBuf::from(new_dir)
-                };
-                match env::set_current_dir(&path) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        let msg = if e.kind() == io::ErrorKind::NotFound {
-                            format!("cd: {}: No such file or directory", path.display())
-                        } else {
-                            format!("cd: {}", e)
-                        };
-                        if let Some(file) = &mut stderr_file {
-                            writeln!(file, "{}", msg).ok();
-                        } else {
-                            eprintln!("{}", msg);
-                        }
-                    }
-                }
-            }
-            _ => {
-                if builtins.contains(command.as_str()) {
-                    let msg = format!("{}: command not found", command);
-                    if let Some(file) = &mut stderr_file {
-                        writeln!(file, "{}", msg).ok();
-                    } else {
-                        eprintln!("{}", msg);
-                    }
-                    continue;
-                }
-
-                let program_path = PathBuf::from(command);
-                let program_path_exists = program_path.exists();
-                let is_exec = is_executable(&program_path);
-
-                let path = if program_path_exists && is_exec {
-                    Some(program_path)
-                } else {
-                    find_in_path(command)
-                };
-
-                if let Some(path) = path {
-                    let args = command_args[1..]
-                        .iter()
-                        .map(|s| OsStr::new(s.as_str()))
-                        .collect::<Vec<_>>();
-
-                    let mut cmd = Command::new(&path);
-                    cmd.args(args);
-
-                    if let Some((file_path, append)) = &stdout_redirect {
-                        match OpenOptions::new()
-                            .create(true)
-                            .write(true)
-                            .append(*append)
-                            .truncate(!*append)
-                            .open(file_path)
-                        {
-                            Ok(file) => {
-                                cmd.stdout(file);
-                            }
-                            Err(e) => {
-                                let msg = format!("Failed to open stdout file '{}': {}", file_path, e);
-                                if let Some(file) = &mut stderr_file {
-                                    writeln!(file, "{}", msg).ok();
-                                } else {
-                                    eprintln!("{}", msg);
-                                }
-                                continue;
-                            }
-                        }
-                    }
-
-                    if let Some((file_path, append)) = &stderr_redirect {
-                        match OpenOptions::new()
-                            .create(true)
-                            .write(true)
-                            .append(*append)
-                            .truncate(!*append)
-                            .open(file_path)
-                        {
-                            Ok(file) => {
-                                cmd.stderr(file);
-                            }
-                            Err(e) => {
-                                let msg = format!("Failed to open stderr file '{}': {}", file_path, e);
-                                eprintln!("{}", msg);
-                                continue;
-                            }
-                        }
-                    }
-
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::process::CommandExt;
-                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                            cmd.arg0(file_name);
-                        }
-                    }
-
-                    match cmd.status() {
-                        Ok(_status) => {
-                            print!("$ ");
-                            io::stdout().flush().ok();
-                        }
-                        Err(e) => {
-                            let msg = format!("{}: command not found", command);
-                            if let Some(file) = &mut stderr_file {
-                                writeln!(file, "{}", msg).ok();
-                            } else {
-                                eprintln!("{}", msg);
-                            }
-                            print!("$ ");
-                            io::stdout().flush().ok();
-                        }
-                    }
-                } else {
-                    let msg = format!("{}: command not found", command);
-                    if let Some(file) = &mut stderr_file {
-                        writeln!(file, "{}", msg).ok();
-                    } else {
-                        eprintln!("{}", msg);
-                    }
-                    print!("$ ");
-                    io::stdout().flush().ok();
-                }
+            ShellExec::RedirectedStdErrAppend(cmd, file_path) => {
+                let mut file = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .append(true)
+                    .open(&file_path)?;
+                let output = execute_shell_command(cmd, &path, &home)?;
+                handle_command_output(output, None, Some(&mut file))?;
             }
         }
     }
 
     Ok(())
+}
+
+fn parse_shell_exec(parts: &[String]) -> ShellExec {
+    let mut command_parts = Vec::new();
+    let mut stdout_redirect = None;
+    let mut stderr_redirect = None;
+    let mut is_append = false;
+
+    let mut i = 0;
+    while i < parts.len() {
+        match parts[i].as_str() {
+            ">" | "1>" => {
+                if i + 1 < parts.len() {
+                    stdout_redirect = Some((parts[i + 1].clone(), false));
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            ">>" | "1>>" => {
+                if i + 1 < parts.len() {
+                    stdout_redirect = Some((parts[i + 1].clone(), true));
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "2>" => {
+                if i + 1 < parts.len() {
+                    stderr_redirect = Some((parts[i + 1].clone(), false));
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "2>>" => {
+                if i + 1 < parts.len() {
+                    stderr_redirect = Some((parts[i + 1].clone(), true));
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => {
+                command_parts.push(parts[i].clone());
+                i += 1;
+            }
+        }
+    }
+
+    if command_parts.is_empty() {
+        return ShellExec::PrintToStd(ShellCommand::Empty);
+    }
+
+    let command = match command_parts[0].as_str() {
+        "exit" => ShellCommand::Exit(command_parts[1..].join(" ")),
+        "echo" => ShellCommand::Echo(command_parts[1..].join(" ")),
+        "type" => ShellCommand::Type(command_parts[1..].join(" ")),
+        "pwd" => ShellCommand::Pwd,
+        "cd" => ShellCommand::Cd(command_parts[1..].join(" ")),
+        cmd => ShellCommand::SysProgram(cmd.to_string(), command_parts[1..].to_vec()),
+    };
+
+    match (stdout_redirect, stderr_redirect) {
+        (Some((path, true)), _) => ShellExec::RedirectedStdOutAppend(command, PathBuf::from(path)),
+        (Some((path, false)), _) => ShellExec::RedirectedStdOut(command, PathBuf::from(path)),
+        (None, Some((path, true))) => ShellExec::RedirectedStdErrAppend(command, PathBuf::from(path)),
+        (None, Some((path, false))) => ShellExec::RedirectedStdErr(command, PathBuf::from(path)),
+        (None, None) => ShellExec::PrintToStd(command),
+    }
 }
