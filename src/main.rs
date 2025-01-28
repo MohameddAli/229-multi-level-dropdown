@@ -331,7 +331,7 @@ fn main() -> io::Result<()> {
                                 }
                                 io::Error::new(io::ErrorKind::Other, e)
                             })?;
-                        writeln!(file, "{} is a shell builtin").map_err(|e| {
+                        writeln!(file, "{} is a shell builtin", cmd_to_check).map_err(|e| {
                             let msg = format!("Error writing to file: {}", e);
                             if let Some(file) = &mut stderr_file {
                                 writeln!(file, "{}", msg).ok();
@@ -561,9 +561,7 @@ fn main() -> io::Result<()> {
                     }
 
                     match cmd.status() {
-                        Ok(_status) => {
-                            io::stdout().flush()?;
-                        }
+                        Ok(_status) => {}
                         Err(e) => {
                             let msg = format!("{}: command not found", command);
                             if let Some(file) = &mut stderr_file {
@@ -583,7 +581,7 @@ fn main() -> io::Result<()> {
                 }
             }
         }
-
-        Ok(())
     }
+
+    Ok(())
 }
