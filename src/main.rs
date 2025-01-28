@@ -565,7 +565,6 @@ fn main() -> io::Result<()> {
                             print!("$ ");
                             io::stdout().flush().ok();
                         }
-                        Ok(_status) => {}
                         Err(e) => {
                             let msg = format!("{}: command not found", command);
                             if let Some(file) = &mut stderr_file {
@@ -573,6 +572,8 @@ fn main() -> io::Result<()> {
                             } else {
                                 eprintln!("{}", msg);
                             }
+                            print!("$ ");
+                            io::stdout().flush().ok();
                         }
                     }
                 } else {
@@ -582,6 +583,8 @@ fn main() -> io::Result<()> {
                     } else {
                         eprintln!("{}", msg);
                     }
+                    print!("$ ");
+                    io::stdout().flush().ok();
                 }
             }
         }
