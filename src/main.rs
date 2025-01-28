@@ -20,6 +20,35 @@ use std::{
 
 use std::{fs, path::PathBuf};
 use std::os::unix::process::CommandExt;
+use rustyline::error::ReadlineError;
+use rustyline::{Editor, Helper, Completer, Hinter, Validator, Highlighter};
+
+const BUILTIN_COMMANDS: [&str; 2] = ["echo", "exit"];
+
+#[derive(Helper, Validator, Highlighter, Hinter)]
+struct ShellCompleter;
+
+impl Completer for ShellCompleter {
+    type Candidate = String;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &rustyline::Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+        let start = line[..pos].rfind(char::is_whitespace).map_or(0, |i| i + 1);
+        let word = &line[start..pos];
+
+        let matches: Vec<String> = BUILTIN_COMMANDS
+            .iter()
+            .filter(|&cmd| cmd.starts_with(word))
+            .map(|&cmd| cmd.to_string())
+            .collect();
+
+        Ok((start, matches))
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 
@@ -79,103 +108,121 @@ fn main() -> Result<()> {
 
     let path = env::var("PATH")?;
 
+    let mut rl = Editor::new()?;
+
+    rl.set_helper(Some(ShellCompleter));
+
     loop {
 
-        print!("$ ");
+        match rl.readline("$ ") {
 
-        io::stdout().flush()?;
+            Ok(line) => {
 
-        // Wait for user input
+                let trimmed_input = line.trim();
 
-        let stdin = io::stdin();
+                if !trimmed_input.is_empty() {
 
-        let mut input = String::new();
+                    rl.add_history_entry(trimmed_input);
 
-        stdin.read_line(&mut input)?;
+                }
 
-        let trimmed_input = input.trim();
+                let exec = parse(trimmed_input);
 
-        let exec = parse(trimmed_input);
+                match exec {
 
-        match exec {
+                    ShellExec::PrintToStd(Command::Exit(s)) if s == "0" => break,
 
-            ShellExec::PrintToStd(Command::Exit(s)) if s == "0" => break,
+                    ShellExec::RedirectedStdOut(Command::Exit(s), _) if s == "0" => break,
 
-            ShellExec::RedirectedStdOut(Command::Exit(s), _) if s == "0" => break,
+                    ShellExec::PrintToStd(Command::Empty) => continue,
 
-            ShellExec::PrintToStd(Command::Empty) => continue,
+                    ShellExec::RedirectedStdOut(Command::Empty, _) => continue,
 
-            ShellExec::RedirectedStdOut(Command::Empty, _) => continue,
+                    ShellExec::PrintToStd(c) => {
 
-            ShellExec::PrintToStd(c) => {
+                        let output = exec_command(c, &path, &home)?;
 
-                let output = exec_command(c, &path, &home)?;
+                        match output {
 
-                match output {
+                            CommandOutput::StdOut(s) => println!("{}", s),
 
-                    CommandOutput::StdOut(s) => println!("{}", s),
+                            CommandOutput::StdErr(s) => eprintln!("{}", s),
 
-                    CommandOutput::StdErr(s) => eprintln!("{}", s),
+                            CommandOutput::Wrapped(c, output) => {
 
-                    CommandOutput::Wrapped(c, output) => {
+                                if !output.stdout.is_empty() {
 
-                        if !output.stdout.is_empty() {
+                                    println!("{}", String::from_utf8(output.stdout)?.trim())
 
-                            println!("{}", String::from_utf8(output.stdout)?.trim())
+                                }
 
-                        }
+                                if !output.stderr.is_empty() {
 
-                        if !output.stderr.is_empty() {
+                                    print_sys_program_failure_to_stderr(c, output.stderr)?
 
-                            print_sys_program_failure_to_stderr(c, output.stderr)?
+                                }
+
+                            }
+
+                            CommandOutput::Noop => continue,
 
                         }
 
                     }
 
-                    CommandOutput::Noop => continue,
+                    ShellExec::RedirectedStdOut(command, file) => {
+
+                        let file = File::create(file)?;
+
+                        let output = exec_command(command, &path, &home)?;
+
+                        handle_redirected_std_out(file, output)?
+
+                    }
+
+                    ShellExec::RedirectedStdOutAppend(command, file) => {
+
+                        let file = OpenOptions::new().append(true).create(true).open(file)?;
+
+                        let output = exec_command(command, &path, &home)?;
+
+                        handle_redirected_std_out(file, output)?
+
+                    }
+
+                    ShellExec::RedirectedStdErr(command, file) => {
+
+                        let file = File::create(file)?;
+
+                        let output = exec_command(command, &path, &home)?;
+
+                        handle_redirected_std_err(file, output)?
+
+                    }
+
+                    ShellExec::RedirectedStdErrAppend(command, file) => {
+
+                        let file = OpenOptions::new().append(true).create(true).open(file)?;
+
+                        let output = exec_command(command, &path, &home)?;
+
+                        handle_redirected_std_err(file, output)?
+
+                    }
 
                 }
 
             }
 
-            ShellExec::RedirectedStdOut(command, file) => {
+            Err(ReadlineError::Interrupted) => continue,
 
-                let file = File::create(file)?;
+            Err(ReadlineError::Eof) => break,
 
-                let output = exec_command(command, &path, &home)?;
+            Err(err) => {
 
-                handle_redirected_std_out(file, output)?
+                eprintln!("Error: {}", err);
 
-            }
-
-            ShellExec::RedirectedStdOutAppend(command, file) => {
-
-                let file = OpenOptions::new().append(true).create(true).open(file)?;
-
-                let output = exec_command(command, &path, &home)?;
-
-                handle_redirected_std_out(file, output)?
-
-            }
-
-            ShellExec::RedirectedStdErr(command, file) => {
-
-                let file = File::create(file)?;
-
-                let output = exec_command(command, &path, &home)?;
-
-                handle_redirected_std_err(file, output)?
-
-            }
-
-            ShellExec::RedirectedStdErrAppend(command, file) => {
-
-                let file = OpenOptions::new().append(true).create(true).open(file)?;
-
-                let output = exec_command(command, &path, &home)?;
-
-                handle_redirected_std_err(file, output)?
+                break;
 
             }
 
