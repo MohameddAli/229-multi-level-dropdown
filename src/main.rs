@@ -561,6 +561,10 @@ fn main() -> io::Result<()> {
                     }
 
                     match cmd.status() {
+                        Ok(_status) => {
+                            print!("$ ");
+                            io::stdout().flush().ok();
+                        }
                         Ok(_status) => {}
                         Err(e) => {
                             let msg = format!("{}: command not found", command);
