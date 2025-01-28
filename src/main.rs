@@ -1,469 +1,1147 @@
-use std::collections::HashSet;
-use std::env::{self, VarError};
-use std::ffi::OsStr;
-use std::fs::{self, File, OpenOptions};
+use core::str;
+
+#[allow(unused_imports)]
+
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::process::{self, Command, Output};
-use std::string::FromUtf8Error;
+
+use std::{
+
+    env::{self, VarError},
+
+    fs::{File, OpenOptions},
+
+    path::Path,
+
+    process::{Output, Stdio},
+
+    string::FromUtf8Error,
+
+};
+
+use std::{fs, path::PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
+
 enum ShellExec {
-    PrintToStd(ShellCommand),
-    RedirectedStdOut(ShellCommand, PathBuf),
-    RedirectedStdErr(ShellCommand, PathBuf),
-    RedirectedStdOutAppend(ShellCommand, PathBuf),
-    RedirectedStdErrAppend(ShellCommand, PathBuf),
+
+    PrintToStd(Command),
+
+    RedirectedStdOut(Command, PathBuf),
+
+    RedirectedStdErr(Command, PathBuf),
+
+    RedirectedStdOutAppend(Command, PathBuf),
+
+    RedirectedStdErrAppend(Command, PathBuf),
+
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum ShellCommand {
+
+enum Command {
+
     Exit(String),
+
     Echo(String),
+
     Type(String),
+
     Pwd,
+
     Cd(String),
+
     SysProgram(String, Vec<String>),
+
     Empty,
+
     Invalid,
+
 }
 
 #[derive(Debug, PartialEq, Eq)]
+
 enum CommandOutput {
+
     StdOut(String),
+
     StdErr(String),
+
     Wrapped(String, Output),
+
     Noop,
-}
 
-pub type Result<T> = std::result::Result<T, Error>;
-
-#[derive(Debug)]
-pub enum Error {
-    InvalidCommand,
-    EncodingError(FromUtf8Error),
-    EnvVarError(VarError),
-    Io(std::io::Error),
-}
-
-impl From<VarError> for Error {
-    fn from(value: VarError) -> Self {
-        Self::EnvVarError(value)
-    }
-}
-
-impl From<std::io::Error> for Error {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<FromUtf8Error> for Error {
-    fn from(value: FromUtf8Error) -> Self {
-        Self::EncodingError(value)
-    }
-}
-
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    match fs::metadata(path) {
-        Ok(metadata) => {
-            let permissions = metadata.permissions();
-            metadata.is_file() && (permissions.mode() & 0o111 != 0)
-        }
-        Err(_) => false,
-    }
-}
-
-#[cfg(windows)]
-fn is_executable(path: &Path) -> bool {
-    path.is_file()
-        && path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("exe"))
-}
-
-fn find_in_path(command: &str) -> Option<PathBuf> {
-    env::var_os("PATH").and_then(|path| {
-        env::split_paths(&path)
-            .filter_map(|dir| {
-                let full_path = dir.join(command);
-                if is_executable(&full_path) {
-                    Some(full_path)
-                } else {
-                    None
-                }
-            })
-            .next()
-    })
-}
-
-fn parse_arguments(input: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let chars: Vec<char> = input.chars().collect();
-    let len = chars.len();
-    let mut pos = 0;
-
-    #[derive(PartialEq)]
-    enum QuoteState {
-        None,
-        Single,
-        Double,
-    }
-
-    while pos < len {
-        while pos < len && chars[pos].is_whitespace() {
-            pos += 1;
-        }
-        if pos >= len {
-            break;
-        }
-
-        let mut buffer = String::new();
-        let mut quote_state = QuoteState::None;
-
-        while pos < len {
-            let c = chars[pos];
-            match quote_state {
-                QuoteState::None => {
-                    if c == '\'' {
-                        quote_state = QuoteState::Single;
-                        pos += 1;
-                    } else if c == '"' {
-                        quote_state = QuoteState::Double;
-                        pos += 1;
-                    } else if c == '\\' {
-                        pos += 1;
-                        if pos < len {
-                            buffer.push(chars[pos]);
-                            pos += 1;
-                        } else {
-                            buffer.push('\\');
-                        }
-                    } else if c.is_whitespace() {
-                        break;
-                    } else {
-                        buffer.push(c);
-                        pos += 1;
-                    }
-                }
-                QuoteState::Single => {
-                    if c == '\'' {
-                        quote_state = QuoteState::None;
-                        pos += 1;
-                    } else {
-                        buffer.push(c);
-                        pos += 1;
-                    }
-                }
-                QuoteState::Double => {
-                    if c == '\\' {
-                        pos += 1;
-                        if pos < len {
-                            let next_c = chars[pos];
-                            if matches!(next_c, '\\' | '$' | '"' | '\n') {
-                                buffer.push(next_c);
-                                pos += 1;
-                            } else {
-                                buffer.push('\\');
-                                buffer.push(next_c);
-                                pos += 1;
-                            }
-                        } else {
-                            buffer.push('\\');
-                        }
-                    } else if c == '"' {
-                        quote_state = QuoteState::None;
-                        pos += 1;
-                    } else {
-                        buffer.push(c);
-                        pos += 1;
-                    }
-                }
-            }
-        }
-
-        tokens.push(buffer);
-    }
-
-    tokens
-}
-
-fn split_redirects(token: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let chars: Vec<char> = token.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-
-    while i < len {
-        if i + 2 < len && chars[i] == '1' && chars[i + 1] == '>' && chars[i + 2] == '>' {
-            parts.push("1>>".to_string());
-            i += 3;
-        } else if i + 1 < len && chars[i] == '1' && chars[i + 1] == '>' {
-            parts.push("1>".to_string());
-            i += 2;
-        } else if i + 2 < len && chars[i] == '2' && chars[i + 1] == '>' && chars[i + 2] == '>' {
-            parts.push("2>>".to_string());
-            i += 3;
-        } else if i + 1 < len && chars[i] == '2' && chars[i + 1] == '>' {
-            parts.push("2>".to_string());
-            i += 2;
-        } else if i + 1 < len && chars[i] == '>' && chars[i + 1] == '>' {
-            parts.push(">>".to_string());
-            i += 2;
-        } else if chars[i] == '>' {
-            parts.push(">".to_string());
-            i += 1;
-        } else {
-            let mut current = String::new();
-            while i < len
-                && !(chars[i] == '>'
-                    || chars[i] == '1'
-                    || chars[i] == '2'
-                    || (i + 1 < len && chars[i] == '>' && chars[i + 1] == '>'))
-            {
-                current.push(chars[i]);
-                i += 1;
-            }
-            if !current.is_empty() {
-                parts.push(current);
-            }
-        }
-    }
-
-    parts
-}
-
-fn handle_command_output(output: CommandOutput, stdout_file: Option<&mut File>, stderr_file: Option<&mut File>) -> Result<()> {
-    match output {
-        CommandOutput::StdOut(s) => {
-            if let Some(file) = stdout_file {
-                writeln!(file, "{}", s)?;
-            } else {
-                println!("{}", s);
-            }
-        }
-        CommandOutput::StdErr(s) => {
-            if let Some(file) = stderr_file {
-                writeln!(file, "{}", s)?;
-            } else {
-                eprintln!("{}", s);
-            }
-        }
-        CommandOutput::Wrapped(cmd, output) => {
-            if !output.stdout.is_empty() {
-                let stdout_str = String::from_utf8(output.stdout)?.trim().to_string();
-                if let Some(file) = stdout_file {
-                    writeln!(file, "{}", stdout_str)?;
-                } else {
-                    println!("{}", stdout_str);
-                }
-            }
-            if !output.stderr.is_empty() {
-                let stderr_str = String::from_utf8(output.stderr)?.trim().to_string();
-                if let Some(file) = stderr_file {
-                    writeln!(file, "{}{}", cmd, stderr_str)?;
-                } else {
-                    eprintln!("{}{}", cmd, stderr_str);
-                }
-            }
-        }
-        CommandOutput::Noop => {}
-    }
-    Ok(())
-}
-
-fn execute_shell_command(command: ShellCommand, path: &str, home: &str) -> Result<CommandOutput> {
-    match command {
-        ShellCommand::Exit(code) => {
-            let exit_code = code.parse().unwrap_or(0);
-            process::exit(exit_code);
-        }
-        ShellCommand::Echo(s) => Ok(CommandOutput::StdOut(s)),
-        ShellCommand::Type(cmd) => {
-            let builtins: HashSet<&str> = ["exit", "echo", "type", "pwd", "cd"].iter().cloned().collect();
-            if builtins.contains(cmd.as_str()) {
-                Ok(CommandOutput::StdOut(format!("{} is a shell builtin", cmd)))
-            } else if let Some(path) = find_in_path(&cmd) {
-                Ok(CommandOutput::StdOut(format!("{} is {}", cmd, path.display())))
-            } else {
-                Ok(CommandOutput::StdOut(format!("{}: not found", cmd)))
-            }
-        }
-        ShellCommand::Pwd => {
-            let current_dir = env::current_dir()?;
-            Ok(CommandOutput::StdOut(format!("{}", current_dir.display())))
-        }
-        ShellCommand::Cd(dir) => {
-            let path = if dir == "~" {
-                PathBuf::from(home)
-            } else {
-                PathBuf::from(dir)
-            };
-            
-            match env::set_current_dir(&path) {
-                Ok(()) => Ok(CommandOutput::Noop),
-                Err(e) => Ok(CommandOutput::StdErr(format!("cd: {}: {}", path.display(), e)))
-            }
-        }
-        ShellCommand::SysProgram(cmd, args) => {
-            if let Some(program_path) = find_in_path(&cmd) {
-                let output = Command::new(&program_path)
-                    .args(&args)
-                    .output()?;
-                Ok(CommandOutput::Wrapped(cmd, output))
-            } else {
-                Ok(CommandOutput::StdErr(format!("{}: command not found", cmd)))
-            }
-        }
-        ShellCommand::Empty => Ok(CommandOutput::Noop),
-        ShellCommand::Invalid => Err(Error::InvalidCommand),
-    }
 }
 
 fn main() -> Result<()> {
+
     let home = env::var("HOME")?;
+
     let path = env::var("PATH")?;
 
     loop {
+
         print!("$ ");
+
         io::stdout().flush()?;
 
+        // Wait for user input
+
+        let stdin = io::stdin();
+
         let mut input = String::new();
-        match io::stdin().read_line(&mut input) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                break;
+
+        stdin.read_line(&mut input)?;
+
+        let trimmed_input = input.trim();
+
+        let exec = parse(trimmed_input);
+
+        match exec {
+
+            ShellExec::PrintToStd(Command::Exit(s)) if s == "0" => break,
+
+            ShellExec::RedirectedStdOut(Command::Exit(s), _) if s == "0" => break,
+
+            ShellExec::PrintToStd(Command::Empty) => continue,
+
+            ShellExec::RedirectedStdOut(Command::Empty, _) => continue,
+
+            ShellExec::PrintToStd(c) => {
+
+                let output = exec_command(c, &path, &home)?;
+
+                match output {
+
+                    CommandOutput::StdOut(s) => println!("{}", s),
+
+                    CommandOutput::StdErr(s) => eprintln!("{}", s),
+
+                    CommandOutput::Wrapped(c, output) => {
+
+                        if !output.stdout.is_empty() {
+
+                            println!("{}", String::from_utf8(output.stdout)?.trim())
+
+                        }
+
+                        if !output.stderr.is_empty() {
+
+                            print_sys_program_failure_to_stderr(c, output.stderr)?
+
+                        }
+
+                    }
+
+                    CommandOutput::Noop => continue,
+
+                }
+
             }
+
+            ShellExec::RedirectedStdOut(command, file) => {
+
+                let file = File::create(file)?;
+
+                let output = exec_command(command, &path, &home)?;
+
+                handle_redirected_std_out(file, output)?
+
+            }
+
+            ShellExec::RedirectedStdOutAppend(command, file) => {
+
+                let file = OpenOptions::new().append(true).create(true).open(file)?;
+
+                let output = exec_command(command, &path, &home)?;
+
+                handle_redirected_std_out(file, output)?
+
+            }
+
+            ShellExec::RedirectedStdErr(command, file) => {
+
+                let file = File::create(file)?;
+
+                let output = exec_command(command, &path, &home)?;
+
+                handle_redirected_std_err(file, output)?
+
+            }
+
+            ShellExec::RedirectedStdErrAppend(command, file) => {
+
+                let file = OpenOptions::new().append(true).create(true).open(file)?;
+
+                let output = exec_command(command, &path, &home)?;
+
+                handle_redirected_std_err(file, output)?
+
+            }
+
         }
 
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let parts = parse_arguments(trimmed);
-        let parts = parts
-            .into_iter()
-            .flat_map(|token| split_redirects(&token))
-            .collect::<Vec<_>>();
-
-        let shell_exec = parse_shell_exec(&parts);
-        
-        match shell_exec {
-            ShellExec::PrintToStd(cmd) => {
-                let output = execute_shell_command(cmd, &path, &home)?;
-                handle_command_output(output, None, None)?;
-            }
-            ShellExec::RedirectedStdOut(cmd, file_path) => {
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .open(&file_path)?;
-                let output = execute_shell_command(cmd, &path, &home)?;
-                handle_command_output(output, Some(&mut file), None)?;
-            }
-            ShellExec::RedirectedStdOutAppend(cmd, file_path) => {
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .append(true)
-                    .open(&file_path)?;
-                let output = execute_shell_command(cmd, &path, &home)?;
-                handle_command_output(output, Some(&mut file), None)?;
-            }
-            ShellExec::RedirectedStdErr(cmd, file_path) => {
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .open(&file_path)?;
-                let output = execute_shell_command(cmd, &path, &home)?;
-                handle_command_output(output, None, Some(&mut file))?;
-            }
-            ShellExec::RedirectedStdErrAppend(cmd, file_path) => {
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .append(true)
-                    .open(&file_path)?;
-                let output = execute_shell_command(cmd, &path, &home)?;
-                handle_command_output(output, None, Some(&mut file))?;
-            }
-        }
     }
 
     Ok(())
+
 }
 
-fn parse_shell_exec(parts: &[String]) -> ShellExec {
-    let mut command_parts = Vec::new();
-    let mut stdout_redirect = None;
-    let mut stderr_redirect = None;
-    let mut is_append = false;
+fn handle_redirected_std_out(mut file: File, output: CommandOutput) -> Result<()> {
 
-    let mut i = 0;
-    while i < parts.len() {
-        match parts[i].as_str() {
-            ">" | "1>" => {
-                if i + 1 < parts.len() {
-                    stdout_redirect = Some((parts[i + 1].clone(), false));
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            ">>" | "1>>" => {
-                if i + 1 < parts.len() {
-                    stdout_redirect = Some((parts[i + 1].clone(), true));
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            "2>" => {
-                if i + 1 < parts.len() {
-                    stderr_redirect = Some((parts[i + 1].clone(), false));
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            "2>>" => {
-                if i + 1 < parts.len() {
-                    stderr_redirect = Some((parts[i + 1].clone(), true));
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            _ => {
-                command_parts.push(parts[i].clone());
-                i += 1;
-            }
+    match output {
+
+        CommandOutput::StdOut(s) => {
+
+            writeln!(file, "{}", s)?;
+
+            file.flush()?
+
         }
+
+        CommandOutput::StdErr(s) => eprintln!("{}", s),
+
+        CommandOutput::Wrapped(c, output) => {
+
+            if !output.stdout.is_empty() {
+
+                writeln!(file, "{}", String::from_utf8(output.stdout)?.trim())?;
+
+                file.flush()?
+
+            }
+
+            if !output.stderr.is_empty() {
+
+                print_sys_program_failure_to_stderr(c, output.stderr)?
+
+            }
+
+        }
+
+        CommandOutput::Noop => (),
+
     }
 
-    if command_parts.is_empty() {
-        return ShellExec::PrintToStd(ShellCommand::Empty);
+    Ok(())
+
+}
+
+fn handle_redirected_std_err(mut file: File, output: CommandOutput) -> Result<()> {
+
+    match output {
+
+        CommandOutput::StdOut(s) => eprintln!("{}", s),
+
+        CommandOutput::StdErr(s) => writeln!(file, "{}", s)?,
+
+        CommandOutput::Wrapped(c, output) => {
+
+            if !output.stdout.is_empty() {
+
+                println!("{}", String::from_utf8(output.stdout)?.trim())
+
+            }
+
+            if !output.stderr.is_empty() {
+
+                let raw_error_message = String::from_utf8(output.stderr)?;
+
+                if let Some(split_point) = raw_error_message.find(&c) {
+
+                    if let Some((_, right_half)) = raw_error_message.split_at_checked(split_point) {
+
+                        let err_msg = &right_half[c.len()..];
+
+                        writeln!(file, "{}{}", c, err_msg.trim())?;
+
+                    } else {
+
+                        writeln!(file, "{}", raw_error_message.trim())?;
+
+                    }
+
+                } else {
+
+                    writeln!(file, "{}", raw_error_message.trim())?;
+
+                }
+
+                file.flush()?;
+
+            }
+
+        }
+
+        CommandOutput::Noop => (),
+
     }
 
-    let command = match command_parts[0].as_str() {
-        "exit" => ShellCommand::Exit(command_parts[1..].join(" ")),
-        "echo" => ShellCommand::Echo(command_parts[1..].join(" ")),
-        "type" => ShellCommand::Type(command_parts[1..].join(" ")),
-        "pwd" => ShellCommand::Pwd,
-        "cd" => ShellCommand::Cd(command_parts[1..].join(" ")),
-        cmd => ShellCommand::SysProgram(cmd.to_string(), command_parts[1..].to_vec()),
-    };
+    Ok(())
 
-    match (stdout_redirect, stderr_redirect) {
-        (Some((path, true)), _) => ShellExec::RedirectedStdOutAppend(command, PathBuf::from(path)),
-        (Some((path, false)), _) => ShellExec::RedirectedStdOut(command, PathBuf::from(path)),
-        (None, Some((path, true))) => ShellExec::RedirectedStdErrAppend(command, PathBuf::from(path)),
-        (None, Some((path, false))) => ShellExec::RedirectedStdErr(command, PathBuf::from(path)),
-        (None, None) => ShellExec::PrintToStd(command),
+}
+
+fn print_sys_program_failure_to_stderr(program: String, stderr: Vec<u8>) -> Result<()> {
+
+    let raw_error_message = String::from_utf8(stderr)?;
+
+    if let Some(split_point) = raw_error_message.find(&program) {
+
+        if let Some((_, right_half)) = raw_error_message.split_at_checked(split_point) {
+
+            let err_msg = &right_half[program.len()..];
+
+            eprintln!("{}{}", program, err_msg.trim());
+
+        } else {
+
+            eprintln!("{}", raw_error_message.trim());
+
+        }
+
+    } else {
+
+        eprintln!("{}", raw_error_message.trim());
+
     }
+
+    Ok(())
+
+}
+
+fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutput> {
+
+    let built_in_commands = ["echo", "exit", "type", "pwd", "cd"];
+
+    match command {
+
+        Command::Exit(s) if s == "0" => Ok(CommandOutput::Noop),
+
+        Command::Exit(s) => Ok(CommandOutput::StdErr(format!("Unknown exit code {}", s))),
+
+        Command::Echo(s) => Ok(CommandOutput::StdOut(s.to_string())),
+
+        Command::Type(c) if built_in_commands.contains(&c.as_str()) => {
+
+            Ok(CommandOutput::StdOut(format!("{} is a shell builtin", c)))
+
+        }
+
+        Command::Type(c) => {
+
+            if !c.is_empty() {
+
+                if let Some(executable) = find_executable_on_path(path, &c)? {
+
+                    Ok(CommandOutput::StdOut(format!(
+
+                        "{} is {}",
+
+                        c,
+
+                        executable.display()
+
+                    )))
+
+                } else {
+
+                    Ok(CommandOutput::StdErr(format!("{}: not found", c)))
+
+                }
+
+            } else {
+
+                Ok(CommandOutput::Noop)
+
+            }
+
+        }
+
+        Command::Pwd => {
+
+            let curren_dir = env::current_dir()?;
+
+            Ok(CommandOutput::StdOut(format!("{}", curren_dir.display())))
+
+        }
+
+        Command::Cd(directory) => {
+
+            if !directory.is_empty() {
+
+                let dir_path = if directory == "~" {
+
+                    Path::new(home)
+
+                } else {
+
+                    Path::new(&directory)
+
+                };
+
+                if env::set_current_dir(dir_path).is_err() {
+
+                    Ok(CommandOutput::StdOut(format!(
+
+                        "cd: {}: No such file or directory",
+
+                        directory
+
+                    )))
+
+                } else {
+
+                    Ok(CommandOutput::Noop)
+
+                }
+
+            } else {
+
+                Ok(CommandOutput::Noop)
+
+            }
+
+        }
+
+        Command::SysProgram(c, args) => {
+
+            if let Some(program) = find_executable_on_path(path, &c)? {
+
+                let output = run_executable_with_args(&program, args.as_slice())?;
+
+                Ok(CommandOutput::Wrapped(c.to_string(), output))
+
+            } else {
+
+                Ok(CommandOutput::StdErr(format!("{}: command not found", c)))
+
+            }
+
+        }
+
+        Command::Empty => Ok(CommandOutput::Noop),
+
+        Command::Invalid => Err(Error::InvalidCommand),
+
+    }
+
+}
+
+fn parse(input: &str) -> ShellExec {
+
+    let tokens = tokenize(input);
+
+    if let Some((split_point, _)) = tokens
+
+        .iter()
+
+        .enumerate()
+
+        .find(|&(_, token)| token == "1>" || token == ">")
+
+    {
+
+        if let Some((left_half, right_half)) = tokens.split_at_checked(split_point) {
+
+            let command = &left_half[..left_half.len()];
+
+            let file = &right_half[1..];
+
+            let command = redirected_command(command.to_vec());
+
+            ShellExec::RedirectedStdOut(command, PathBuf::from(file.join(" ")))
+
+        } else {
+
+            ShellExec::PrintToStd(Command::Invalid)
+
+        }
+
+    } else if let Some((split_point, _)) = tokens
+
+        .iter()
+
+        .enumerate()
+
+        .find(|&(_, token)| token == "1>>" || token == ">>")
+
+    {
+
+        if let Some((left_half, right_half)) = tokens.split_at_checked(split_point) {
+
+            let command = &left_half[..left_half.len()];
+
+            let file = &right_half[1..];
+
+            let command = redirected_command(command.to_vec());
+
+            ShellExec::RedirectedStdOutAppend(command, PathBuf::from(file.join(" ")))
+
+        } else {
+
+            ShellExec::PrintToStd(Command::Invalid)
+
+        }
+
+    } else if let Some((split_point, _)) =
+
+        tokens.iter().enumerate().find(|&(_, token)| token == "2>")
+
+    {
+
+        if let Some((left_half, right_half)) = tokens.split_at_checked(split_point) {
+
+            let command = &left_half[..left_half.len()];
+
+            let file = &right_half[1..];
+
+            let command = redirected_command(command.to_vec());
+
+            ShellExec::RedirectedStdErr(command, PathBuf::from(file.join(" ")))
+
+        } else {
+
+            ShellExec::PrintToStd(Command::Invalid)
+
+        }
+
+    } else if let Some((split_point, _)) =
+
+        tokens.iter().enumerate().find(|&(_, token)| token == "2>>")
+
+    {
+
+        if let Some((left_half, right_half)) = tokens.split_at_checked(split_point) {
+
+            let command = &left_half[..left_half.len()];
+
+            let file = &right_half[1..];
+
+            let command = redirected_command(command.to_vec());
+
+            ShellExec::RedirectedStdErrAppend(command, PathBuf::from(file.join(" ")))
+
+        } else {
+
+            ShellExec::PrintToStd(Command::Invalid)
+
+        }
+
+    } else if let Some((head, tail)) = tokens.split_first() {
+
+        let command = match head.as_str() {
+
+            "echo" => Command::Echo(tail.join(" ")),
+
+            "exit" => Command::Exit(tail.join(" ")),
+
+            "type" => Command::Type(tail.join(" ")),
+
+            "pwd" => Command::Pwd,
+
+            "cd" => Command::Cd(tail.join(" ")),
+
+            c => Command::SysProgram(c.to_owned(), tail.to_vec()),
+
+        };
+
+        ShellExec::PrintToStd(command)
+
+    } else {
+
+        ShellExec::PrintToStd(Command::Empty)
+
+    }
+
+}
+
+fn redirected_command(command: Vec<String>) -> Command {
+
+    if let Some((head, tail)) = command.split_first() {
+
+        match head.as_str() {
+
+            "echo" => Command::Echo(tail.join(" ")),
+
+            "exit" => Command::Exit(tail.join(" ")),
+
+            "type" => Command::Type(tail.join(" ")),
+
+            "pwd" => Command::Pwd,
+
+            "cd" => Command::Cd(tail.join(" ")),
+
+            c => Command::SysProgram(c.to_owned(), tail.to_vec()),
+
+        }
+
+    } else {
+
+        Command::Invalid
+
+    }
+
+}
+
+fn tokenize(input: &str) -> Vec<String> {
+
+    let mut tokens = Vec::new();
+
+    let mut current_token = String::new();
+
+    let mut in_single_quote = false;
+
+    let mut in_double_quote = false;
+
+    let mut in_escape = false;
+
+    for (i, c) in input.chars().enumerate() {
+
+        match c {
+
+            '\\' if in_escape => {
+
+                current_token.push(c);
+
+                in_escape = false;
+
+            }
+
+            '\\' if !in_single_quote && !in_double_quote => in_escape = true,
+
+            '\\' if in_double_quote => {
+
+                if let Some(next_char) = input.chars().nth(i + 1) {
+
+                    if next_char == '$'
+
+                        || next_char == '\\'
+
+                        || next_char == '"'
+
+                        || next_char == '\n'
+
+                    {
+
+                        in_escape = true;
+
+                    } else {
+
+                        current_token.push(c);
+
+                    }
+
+                }
+
+            }
+
+            '\'' if in_escape => {
+
+                current_token.push(c);
+
+                in_escape = false;
+
+            }
+
+            '\'' if in_single_quote => {
+
+                in_single_quote = false;
+
+            }
+
+            '\'' if !in_double_quote => in_single_quote = true,
+
+            '"' if in_escape => {
+
+                current_token.push(c);
+
+                in_escape = false;
+
+            }
+
+            '"' if in_double_quote => {
+
+                in_double_quote = false;
+
+            }
+
+            '"' if !in_single_quote => in_double_quote = true,
+
+            ' ' | '\t' if in_escape => {
+
+                current_token.push(c);
+
+                in_escape = false;
+
+            }
+
+            ' ' | '\t' if !in_single_quote && !in_double_quote => {
+
+                if !current_token.is_empty() {
+
+                    tokens.push(current_token.clone());
+
+                    current_token.clear();
+
+                }
+
+            }
+
+            ' ' | '\t' => current_token.push(c),
+
+            '\n' if in_escape => in_escape = false,
+
+            _ => {
+
+                current_token.push(c);
+
+                in_escape = false;
+
+            }
+
+        }
+
+    }
+
+    // Don't forget to add the last word if there is one
+
+    if !current_token.is_empty() {
+
+        tokens.push(current_token);
+
+    }
+
+    tokens
+
+}
+
+fn find_executable_on_path(path: &str, executable: &str) -> Result<Option<PathBuf>> {
+
+    Ok(path
+
+        .split(":")
+
+        .map(|dir| Path::new(dir).join(executable))
+
+        .find(|path| fs::metadata(path).is_ok()))
+
+}
+
+fn run_executable_with_args(program: &PathBuf, args: &[String]) -> io::Result<Output> {
+
+    std::process::Command::new(program)
+
+        .args(args)
+
+        .stdout(Stdio::piped())
+
+        .output()
+
+}
+
+pub type Result<T> = core::result::Result<T, Error>;
+
+#[derive(Debug)]
+
+#[allow(dead_code)]
+
+pub enum Error {
+
+    InvalidCommand,
+
+    EncodingError(FromUtf8Error),
+
+    EnvVarError(VarError),
+
+    Io(std::io::Error),
+
+}
+
+impl From<VarError> for Error {
+
+    fn from(value: VarError) -> Self {
+
+        Self::EnvVarError(value)
+
+    }
+
+}
+
+impl From<std::io::Error> for Error {
+
+    fn from(value: std::io::Error) -> Self {
+
+        Self::Io(value)
+
+    }
+
+}
+
+impl From<FromUtf8Error> for Error {
+
+    fn from(value: FromUtf8Error) -> Self {
+
+        Self::EncodingError(value)
+
+    }
+
+}
+
+impl core::fmt::Display for Error {
+
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+
+        write!(fmt, "{self:?}")
+
+    }
+
+}
+
+impl std::error::Error for Error {}
+
+#[cfg(test)]
+
+mod tests {
+
+    use super::*;
+
+    #[test]
+
+    fn tokenize_should_split_on_whitespace() {
+
+        let result = tokenize("echo foo     bar asd");
+
+        assert_eq!(result, vec!["echo", "foo", "bar", "asd"]);
+
+    }
+
+    #[test]
+
+    fn tokenize_should_preserve_all_characters_in_single_quotes() {
+
+        let test_cases = vec![
+
+            (
+
+                "echo 'foo                  bar'",
+
+                vec!["echo", "foo                  bar"],
+
+            ),
+
+            (
+
+                "cat '/tmp/file name' '/tmp/file name with spaces'",
+
+                vec!["cat", "/tmp/file name", "/tmp/file name with spaces"],
+
+            ),
+
+            (r#"echo 'foo\     bar'"#, vec!["echo", r#"foo\     bar"#]),
+
+            (r#"echo 'foo" bar'"#, vec!["echo", r#"foo" bar"#]),
+
+            (r#"'exe with "quotes"'"#, vec![r#"exe with "quotes""#]),
+
+        ];
+
+        for (test_case, expected_result) in test_cases {
+
+            assert_eq!(tokenize(test_case), expected_result);
+
+        }
+
+    }
+
+    #[test]
+
+    fn tokenize_should_preserve_most_characters_in_double_quotes_except_backslash_in_cases_followed_by_speciacial_character(
+
+    ) {
+
+        let test_cases = vec![
+
+            (r#"echo "/""#, vec!["echo", "/"]),
+
+            (r#"echo "foo"bar"#, vec!["echo", "foobar"]),
+
+            (
+
+                r#"echo "quz  hello"  "bar""#,
+
+                vec!["echo", "quz  hello", "bar"],
+
+            ),
+
+            (
+
+                r#"echo "bar"  "shell's"  "foo""#,
+
+                vec!["echo", "bar", "shell's", "foo"],
+
+            ),
+
+            (
+
+                r#"cat "/tmp/file name" "/tmp/'file name' with spaces""#,
+
+                vec!["cat", "/tmp/file name", "/tmp/'file name' with spaces"],
+
+            ),
+
+            (
+
+                r#"echo "before\   after""#,
+
+                vec!["echo", r#"before\   after"#],
+
+            ),
+
+            (
+
+                r#"cat "/tmp/file\\name" "/tmp/file\ name""#,
+
+                vec!["cat", r#"/tmp/file\name"#, r#"/tmp/file\ name"#],
+
+            ),
+
+            (
+
+                r#"echo "hello'script'\\n'world""#,
+
+                vec!["echo", r#"hello'script'\n'world"#],
+
+            ),
+
+            (r#"echo "\""#, vec!["echo", r#"""#]),
+
+            (
+
+                r#"echo "hello\"insidequotes"script\""#,
+
+                vec!["echo", r#"hello"insidequotesscript""#],
+
+            ),
+
+            (
+
+                r#"cat "/tmp/"file\name"" "/tmp/"file name"""#,
+
+                vec!["cat", "/tmp/filename", "/tmp/file", "name"],
+
+            ),
+
+            (
+
+                r#""exe with 'single quotes'""#,
+
+                vec!["exe with 'single quotes'"],
+
+            ),
+
+            (
+
+                r#"echo "mixed\"quote'example'\\""#,
+
+                vec!["echo", r#"mixed"quote'example'\"#],
+
+            ),
+
+        ];
+
+        for (test_case, expected_result) in test_cases {
+
+            assert_eq!(tokenize(test_case), expected_result);
+
+        }
+
+    }
+
+    #[test]
+
+    fn tokenize_should_treat_unquoted_backslash_as_escape_character() {
+
+        let test_cases = vec![
+
+            (r#"echo \"#, vec!["echo"]),
+
+            (r#"echo \'"#, vec!["echo", r#"'"#]),
+
+            (r#"echo script\""#, vec!["echo", r#"script""#]),
+
+            (
+
+                r#"echo world\ \ \ \ \ \ script"#,
+
+                vec!["echo", "world      script"],
+
+            ),
+
+            (r#"cat file\ name"#, vec!["cat", "file name"]),
+
+            (
+
+                r#"echo \'\"test example\"\'"#,
+
+                vec!["echo", r#"'"test"#, r#"example"'"#],
+
+            ),
+
+        ];
+
+        for (test_case, expected_result) in test_cases {
+
+            assert_eq!(tokenize(test_case), expected_result);
+
+        }
+
+    }
+
+    #[test]
+
+    fn parse_into_command_should_return_redirect_std_out_in_case_tokens_contain_redirection_operator(
+
+    ) {
+
+        let test_cases = vec![
+
+            (
+
+                "ls /tmp/baz > /tmp/foo/baz.md",
+
+                ShellExec::RedirectedStdOut(
+
+                    Command::SysProgram(String::from("ls"), vec![String::from("/tmp/baz")]),
+
+                    PathBuf::from("/tmp/foo/baz.md"),
+
+                ),
+
+            ),
+
+            (
+
+                "ls /tmp/baz 1> /tmp/foo/baz.md",
+
+                ShellExec::RedirectedStdOut(
+
+                    Command::SysProgram(String::from("ls"), vec![String::from("/tmp/baz")]),
+
+                    PathBuf::from("/tmp/foo/baz.md"),
+
+                ),
+
+            ),
+
+        ];
+
+        for (test_case, expected_result) in test_cases {
+
+            assert_eq!(parse(test_case), expected_result);
+
+        }
+
+    }
+
+    #[test]
+
+    fn parse_into_command_should_return_redirect_std_err_in_case_tokens_contain_redirection_operator(
+
+    ) {
+
+        let test_cases = vec![(
+
+            "ls /tmp/baz 2> /tmp/foo/baz.md",
+
+            ShellExec::RedirectedStdErr(
+
+                Command::SysProgram(String::from("ls"), vec![String::from("/tmp/baz")]),
+
+                PathBuf::from("/tmp/foo/baz.md"),
+
+            ),
+
+        )];
+
+        for (test_case, expected_result) in test_cases {
+
+            assert_eq!(parse(test_case), expected_result);
+
+        }
+
+    }
+
+    #[test]
+
+    fn parse_into_command_should_return_redirect_std_out_in_case_tokens_contain_appending_redirection_operator(
+
+    ) {
+
+        let test_cases = vec![
+
+            (
+
+                "ls /tmp/baz >> /tmp/foo/baz.md",
+
+                ShellExec::RedirectedStdOutAppend(
+
+                    Command::SysProgram(String::from("ls"), vec![String::from("/tmp/baz")]),
+
+                    PathBuf::from("/tmp/foo/baz.md"),
+
+                ),
+
+            ),
+
+            (
+
+                "ls /tmp/baz 1>> /tmp/foo/baz.md",
+
+                ShellExec::RedirectedStdOutAppend(
+
+                    Command::SysProgram(String::from("ls"), vec![String::from("/tmp/baz")]),
+
+                    PathBuf::from("/tmp/foo/baz.md"),
+
+                ),
+
+            ),
+
+        ];
+
+        for (test_case, expected_result) in test_cases {
+
+            assert_eq!(parse(test_case), expected_result);
+
+        }
+
+    }
+
+    #[test]
+
+    fn parse_into_command_should_return_redirect_std_err_in_case_tokens_contain_appending_redirection_operator(
+
+    ) {
+
+        let test_cases = vec![(
+
+            "ls /tmp/baz 2>> /tmp/foo/baz.md",
+
+            ShellExec::RedirectedStdErrAppend(
+
+                Command::SysProgram(String::from("ls"), vec![String::from("/tmp/baz")]),
+
+                PathBuf::from("/tmp/foo/baz.md"),
+
+            ),
+
+        )];
+
+        for (test_case, expected_result) in test_cases {
+
+            assert_eq!(parse(test_case), expected_result);
+
+        }
+
+    }
+
 }
