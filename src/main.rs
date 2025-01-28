@@ -19,6 +19,7 @@ use std::{
 };
 
 use std::{fs, path::PathBuf};
+use std::os::unix::process::CommandExt;
 
 #[derive(Debug, PartialEq, Eq)]
 
