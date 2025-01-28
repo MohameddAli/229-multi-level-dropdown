@@ -730,6 +730,8 @@ fn run_executable_with_args(program: &PathBuf, args: &[String]) -> io::Result<Ou
 
     std::process::Command::new(program)
 
+        .arg0(program.file_name().unwrap().to_str().unwrap())
+
         .args(args)
 
         .stdout(Stdio::piped())
