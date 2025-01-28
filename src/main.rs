@@ -21,34 +21,45 @@ use std::{
 use std::{fs, path::PathBuf};
 use std::os::unix::process::CommandExt;
 use rustyline::error::ReadlineError;
-use rustyline::{Editor, Helper, Completer, Hinter, Validator, Highlighter};
+use rustyline::Editor;
+use rustyline::completion::{Completer, Pair};
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::Helper;
+use rustyline::Context;
 
 const BUILTIN_COMMANDS: [&str; 2] = ["echo", "exit"];
 
-#[derive(Helper, Validator, Highlighter, Hinter)]
+#[derive(Default)]
 struct ShellCompleter;
 
 impl Completer for ShellCompleter {
-    type Candidate = String;
+    type Candidate = Pair;
 
-    fn complete(
-        &self,
-        line: &str,
-        pos: usize,
-        _ctx: &rustyline::Context<'_>,
-    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+    fn complete(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> rustyline::Result<(usize, Vec<Pair>)> {
         let start = line[..pos].rfind(char::is_whitespace).map_or(0, |i| i + 1);
         let word = &line[start..pos];
 
-        let matches: Vec<String> = BUILTIN_COMMANDS
+        let matches: Vec<Pair> = BUILTIN_COMMANDS
             .iter()
             .filter(|&cmd| cmd.starts_with(word))
-            .map(|&cmd| cmd.to_string())
+            .map(|&cmd| Pair {
+                display: cmd.to_string(),
+                replacement: cmd.to_string(),
+            })
             .collect();
 
         Ok((start, matches))
     }
 }
+
+impl Helper for ShellCompleter {}
+impl Highlighter for ShellCompleter {}
+impl Hinter for ShellCompleter {
+    type Hint = String;
+}
+impl Validator for ShellCompleter {}
 
 #[derive(Debug, PartialEq, Eq)]
 
