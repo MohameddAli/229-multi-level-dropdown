@@ -400,13 +400,13 @@ fn handle_redirected_std_err(mut file: File, output: CommandOutput) -> Result<()
 
                         writeln!(file, "{}{}", c, err_msg.trim())?;
 
-                            } else {
+                    } else {
 
                         writeln!(file, "{}", raw_error_message.trim())?;
 
                     }
 
-                        } else {
+                } else {
 
                     writeln!(file, "{}", raw_error_message.trim())?;
 
@@ -438,13 +438,13 @@ fn print_sys_program_failure_to_stderr(program: String, stderr: Vec<u8>) -> Resu
 
             eprintln!("{}{}", program, err_msg.trim());
 
-                            } else {
+        } else {
 
             eprintln!("{}", raw_error_message.trim());
 
-                            }
+        }
 
-                    } else {
+    } else {
 
         eprintln!("{}", raw_error_message.trim());
 
@@ -488,13 +488,13 @@ fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutpu
 
                     )))
 
-                            } else {
+                } else {
 
                     Ok(CommandOutput::StdErr(format!("{}: not found", c)))
 
-                            }
+                }
 
-                    } else {
+            } else {
 
                 Ok(CommandOutput::Noop)
 
@@ -534,13 +534,13 @@ fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutpu
 
                     )))
 
-                                } else {
+                } else {
 
                     Ok(CommandOutput::Noop)
 
                 }
 
-                            } else {
+            } else {
 
                 Ok(CommandOutput::Noop)
 
@@ -556,7 +556,7 @@ fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutpu
 
                 Ok(CommandOutput::Wrapped(c.to_string(), output))
 
-                    } else {
+            } else {
 
                 Ok(CommandOutput::StdErr(format!("{}: command not found", c)))
 
@@ -596,7 +596,7 @@ fn parse(input: &str) -> ShellExec {
 
             ShellExec::RedirectedStdOut(command, PathBuf::from(file.join(" ")))
 
-                            } else {
+        } else {
 
             ShellExec::PrintToStd(Command::Invalid)
 
@@ -622,7 +622,7 @@ fn parse(input: &str) -> ShellExec {
 
             ShellExec::RedirectedStdOutAppend(command, PathBuf::from(file.join(" ")))
 
-                        } else {
+        } else {
 
             ShellExec::PrintToStd(Command::Invalid)
 
@@ -644,7 +644,7 @@ fn parse(input: &str) -> ShellExec {
 
             ShellExec::RedirectedStdErr(command, PathBuf::from(file.join(" ")))
 
-                } else {
+        } else {
 
             ShellExec::PrintToStd(Command::Invalid)
 
@@ -692,7 +692,7 @@ fn parse(input: &str) -> ShellExec {
 
         ShellExec::PrintToStd(command)
 
-                    } else {
+    } else {
 
         ShellExec::PrintToStd(Command::Empty)
 
@@ -720,7 +720,7 @@ fn redirected_command(command: Vec<String>) -> Command {
 
         }
 
-                            } else {
+    } else {
 
         Command::Invalid
 
@@ -770,7 +770,7 @@ fn tokenize(input: &str) -> Vec<String> {
 
                         in_escape = true;
 
-                } else {
+                    } else {
 
                         current_token.push(c);
 
