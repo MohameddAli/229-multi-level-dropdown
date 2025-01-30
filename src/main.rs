@@ -31,7 +31,7 @@ use rustyline::Helper;
 use rustyline::Context;
 
 const BUILTIN_COMMANDS: [&str; 2] = ["echo", "exit"];
-]
+
 #[derive(Default)]
 struct ShellCompleter {
     state: RefCell<CompletionState>,
