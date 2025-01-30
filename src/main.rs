@@ -3,7 +3,7 @@ use core::str;
 #[allow(unused_imports)]
 
 use std::io::{self, Write};
-
+use std::collections::HashSet;
 use std::{
 
     env::{self, VarError},
@@ -34,6 +34,7 @@ const BUILTIN_COMMANDS: [&str; 2] = ["echo", "exit"];
 #[derive(Default)]
 struct ShellCompleter;
 
+// Update the ShellCompleter's complete method
 impl Completer for ShellCompleter {
     type Candidate = Pair;
 
@@ -41,7 +42,8 @@ impl Completer for ShellCompleter {
         let start = line[..pos].rfind(char::is_whitespace).map_or(0, |i| i + 1);
         let word = &line[start..pos];
 
-        let matches: Vec<Pair> = BUILTIN_COMMANDS
+        // Collect built-in commands that match the current word
+        let built_in_matches: Vec<Pair> = BUILTIN_COMMANDS
             .iter()
             .filter(|&cmd| cmd.starts_with(word))
             .map(|&cmd| Pair {
@@ -50,10 +52,54 @@ impl Completer for ShellCompleter {
             })
             .collect();
 
-        Ok((start, matches))
+        // Collect external executables from PATH directories
+        let mut external_commands = Vec::new();
+        if let Ok(path_var) = env::var("PATH") {
+            for dir in path_var.split(':') {
+                if let Ok(entries) = fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        if let Ok(file_type) = entry.file_type() {
+                            if file_type.is_file() {
+                                if let Some(name) = entry.file_name().to_str() {
+                                    // Exclude built-in commands
+                                    if !BUILTIN_COMMANDS.contains(&name) {
+                                        external_commands.push(name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Deduplicate external commands, keeping first occurrence in PATH order
+        let mut seen = HashSet::new();
+        let mut unique_externals = Vec::new();
+        for cmd in external_commands {
+            if !seen.contains(&cmd) {
+                seen.insert(cmd.clone());
+                unique_externals.push(cmd);
+            }
+        }
+
+        // Filter external commands that match the current word
+        let external_matches: Vec<Pair> = unique_externals
+            .iter()
+            .filter(|&cmd| cmd.starts_with(word))
+            .map(|cmd| Pair {
+                display: cmd.to_string(),
+                replacement: format!("{} ", cmd),
+            })
+            .collect();
+
+        // Combine built-in and external matches
+        let mut all_matches = built_in_matches;
+        all_matches.extend(external_matches);
+
+        Ok((start, all_matches))
     }
 }
-
 impl Helper for ShellCompleter {}
 impl Highlighter for ShellCompleter {}
 impl Hinter for ShellCompleter {
