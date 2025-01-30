@@ -70,7 +70,7 @@ impl Completer for ShellCompleter {
                         if let Ok(file_type) = entry.file_type() {
                             if file_type.is_file() || file_type.is_symlink() {
                                 if let Some(name) = entry.file_name().to_str() {
-                                    if !BUILTIN_COMMANDS.contains(&name) && name.starts_with(word) {
+                                    if !BUILTIN_COMMANDS.contains(&name) {
                                         external_commands.push(name.to_string());
                                     }
                                 }
@@ -81,11 +81,19 @@ impl Completer for ShellCompleter {
             }
         }
 
-        // Deduplicate external commands
+        // Deduplicate and filter external commands
         let mut seen = HashSet::new();
         let unique_externals: Vec<String> = external_commands
             .into_iter()
-            .filter(|cmd| seen.insert(cmd.clone()))
+            .filter(|cmd| {
+                if seen.contains(cmd) {
+                    false
+                } else {
+                    seen.insert(cmd.clone());
+                    true
+                }
+            })
+            .filter(|cmd| cmd.starts_with(word))
             .collect();
 
         let external_matches: Vec<Pair> = unique_externals
@@ -113,26 +121,21 @@ impl Completer for ShellCompleter {
         // Handle multiple matches
         if all_matches.len() > 1 {
             if state.tab_count == 1 {
-                // First TAB: ring bell
-                print!("\x07");
-                io::stdout().flush().unwrap();
+                // First TAB: ring bell by returning empty
                 Ok((start, vec![]))
             } else {
-                // Second TAB: print all matches
-                println!("\n{}", state.matches.iter()
-                    .map(|p| p.display.clone())
-                    .collect::<Vec<_>>()
-                    .join("  "));
-                print!("$ {}", line);
-                io::stdout().flush().unwrap();
-                Ok((start, vec![]))
+                // Second TAB: return all matches with trailing spaces
+                let matches_with_spaces: Vec<Pair> = state.matches.iter().map(|pair| {
+                    Pair {
+                        display: pair.display.clone(),
+                        replacement: pair.replacement.clone(),
+                    }
+                }).collect();
+                Ok((start, matches_with_spaces))
             }
-        } else if all_matches.len() == 1 {
-            // Single match: complete immediately
-            Ok((start, all_matches))
         } else {
-            // No matches
-            Ok((start, vec![]))
+            // Single or no matches
+            Ok((start, all_matches))
         }
     }
 }
