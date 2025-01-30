@@ -88,7 +88,7 @@ impl Completer for ShellCompleter {
             .filter(|cmd| {
                 if seen.contains(cmd) {
                     false
-                } else {
+                            } else {
                     seen.insert(cmd.clone());
                     true
                 }
@@ -111,7 +111,7 @@ impl Completer for ShellCompleter {
         // Check if we're in the same completion context
         if state.last_line == line && state.last_pos == pos {
             state.tab_count += 1;
-        } else {
+                        } else {
             state.tab_count = 1;
             state.last_line = line.to_string();
             state.last_pos = pos;
@@ -123,7 +123,7 @@ impl Completer for ShellCompleter {
             if state.tab_count == 1 {
                 // First TAB: ring bell by returning empty
                 Ok((start, vec![]))
-            } else {
+                    } else {
                 // Second TAB: return all matches with trailing spaces
                 let matches_with_spaces: Vec<Pair> = state.matches.iter().map(|pair| {
                     Pair {
@@ -211,121 +211,62 @@ fn main() -> Result<()> {
     rl.set_helper(Some(ShellCompleter));
 
     loop {
+        print!("$ ");
+        io::stdout().flush()?;
 
-        match rl.readline("$ ") {
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let trimmed_input = input.trim();
 
-            Ok(line) => {
-
-                let trimmed_input = line.trim();
-
-                if !trimmed_input.is_empty() {
-
-                    rl.add_history_entry(trimmed_input);
-
-                }
-
-                let exec = parse(trimmed_input);
-
-                match exec {
-
-                    ShellExec::PrintToStd(Command::Exit(s)) if s == "0" => break,
-
-                    ShellExec::RedirectedStdOut(Command::Exit(s), _) if s == "0" => break,
-
-                    ShellExec::PrintToStd(Command::Empty) => continue,
-
-                    ShellExec::RedirectedStdOut(Command::Empty, _) => continue,
-
-                    ShellExec::PrintToStd(c) => {
-
-                        let output = exec_command(c, &path, &home)?;
-
-                        match output {
-
-                            CommandOutput::StdOut(s) => println!("{}", s),
-
-                            CommandOutput::StdErr(s) => eprintln!("{}", s),
-
-                            CommandOutput::Wrapped(c, output) => {
-
-                                if !output.stdout.is_empty() {
-
-                                    println!("{}", String::from_utf8(output.stdout)?.trim())
-
-                                }
-
-                                if !output.stderr.is_empty() {
-
-                                    print_sys_program_failure_to_stderr(c, output.stderr)?
-
-                                }
-
-                            }
-
-                            CommandOutput::Noop => continue,
-
+        let exec = parse(trimmed_input);
+        match exec {
+            ShellExec::PrintToStd(Command::Exit(s)) if s == "0" => break,
+            ShellExec::RedirectedStdOut(Command::Exit(s), _) if s == "0" => break,
+            ShellExec::PrintToStd(Command::Empty) => continue,
+            ShellExec::RedirectedStdOut(Command::Empty, _) => continue,
+            ShellExec::PrintToStd(c) => {
+                let output = exec_command(c, &path, &home)?;
+                match output {
+                    CommandOutput::StdOut(s) => println!("{}", s),
+                    CommandOutput::StdErr(s) => eprintln!("{}", s),
+                    CommandOutput::Wrapped(c, output) => {
+                        if !output.stdout.is_empty() {
+                            println!("{}", String::from_utf8(output.stdout)?.trim())
                         }
-
+                        if !output.stderr.is_empty() {
+                            print_sys_program_failure_to_stderr(c, output.stderr)?
+                        }
                     }
-
-                    ShellExec::RedirectedStdOut(command, file) => {
-
-                        let file = File::create(file)?;
-
-                        let output = exec_command(command, &path, &home)?;
-
-                        handle_redirected_std_out(file, output)?
-
-                    }
-
-                    ShellExec::RedirectedStdOutAppend(command, file) => {
-
-                        let file = OpenOptions::new().append(true).create(true).open(file)?;
-
-                        let output = exec_command(command, &path, &home)?;
-
-                        handle_redirected_std_out(file, output)?
-
-                    }
-
-                    ShellExec::RedirectedStdErr(command, file) => {
-
-                        let file = File::create(file)?;
-
-                        let output = exec_command(command, &path, &home)?;
-
-                        handle_redirected_std_err(file, output)?
-
-                    }
-
-                    ShellExec::RedirectedStdErrAppend(command, file) => {
-
-                        let file = OpenOptions::new().append(true).create(true).open(file)?;
-
-                        let output = exec_command(command, &path, &home)?;
-
-                        handle_redirected_std_err(file, output)?
-
-                    }
-
+                    CommandOutput::Noop => continue,
                 }
-
             }
-
-            Err(ReadlineError::Interrupted) => continue,
-
-            Err(ReadlineError::Eof) => break,
-
-            Err(err) => {
-
-                eprintln!("Error: {}", err);
-
-                break;
-
+            ShellExec::RedirectedStdOut(command, file) => {
+                let mut file = File::create(file)?;
+                let output = exec_command(command, &path, &home)?;
+                handle_redirected_std_out(file, output)?;
             }
-
+            ShellExec::RedirectedStdOutAppend(command, file) => {
+                let mut file = OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(file)?;
+                let output = exec_command(command, &path, &home)?;
+                handle_redirected_std_out(file, output)?;
+            }
+            ShellExec::RedirectedStdErr(command, file) => {
+                let mut file = File::create(file)?;
+                let output = exec_command(command, &path, &home)?;
+                handle_redirected_std_err(file, output)?;
+            }
+            ShellExec::RedirectedStdErrAppend(command, file) => {
+                let mut file = OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(file)?;
+                let output = exec_command(command, &path, &home)?;
+                handle_redirected_std_err(file, output)?;
+            }
         }
-
     }
 
     Ok(())
@@ -333,97 +274,46 @@ fn main() -> Result<()> {
 }
 
 fn handle_redirected_std_out(mut file: File, output: CommandOutput) -> Result<()> {
-
     match output {
-
         CommandOutput::StdOut(s) => {
-
             writeln!(file, "{}", s)?;
-
-            file.flush()?
-
+            file.flush()?;
         }
-
         CommandOutput::StdErr(s) => eprintln!("{}", s),
-
         CommandOutput::Wrapped(c, output) => {
-
             if !output.stdout.is_empty() {
-
                 writeln!(file, "{}", String::from_utf8(output.stdout)?.trim())?;
-
-                file.flush()?
-
+                file.flush()?;
             }
-
             if !output.stderr.is_empty() {
-
-                print_sys_program_failure_to_stderr(c, output.stderr)?
-
+                print_sys_program_failure_to_stderr(c, output.stderr)?;
             }
-
         }
-
         CommandOutput::Noop => (),
-
     }
-
     Ok(())
-
 }
 
 fn handle_redirected_std_err(mut file: File, output: CommandOutput) -> Result<()> {
-
     match output {
-
-        CommandOutput::StdOut(s) => eprintln!("{}", s),
-
-        CommandOutput::StdErr(s) => writeln!(file, "{}", s)?,
-
-        CommandOutput::Wrapped(c, output) => {
-
-            if !output.stdout.is_empty() {
-
-                println!("{}", String::from_utf8(output.stdout)?.trim())
-
-            }
-
-            if !output.stderr.is_empty() {
-
-                let raw_error_message = String::from_utf8(output.stderr)?;
-
-                if let Some(split_point) = raw_error_message.find(&c) {
-
-                    if let Some((_, right_half)) = raw_error_message.split_at_checked(split_point) {
-
-                        let err_msg = &right_half[c.len()..];
-
-                        writeln!(file, "{}{}", c, err_msg.trim())?;
-
-                    } else {
-
-                        writeln!(file, "{}", raw_error_message.trim())?;
-
-                    }
-
-                } else {
-
-                    writeln!(file, "{}", raw_error_message.trim())?;
-
-                }
-
-                file.flush()?;
-
-            }
-
+        CommandOutput::StdOut(s) => println!("{}", s),
+        CommandOutput::StdErr(s) => {
+            writeln!(file, "{}", s)?;
+            file.flush()?;
         }
-
+        CommandOutput::Wrapped(c, output) => {
+            if !output.stdout.is_empty() {
+                println!("{}", String::from_utf8(output.stdout)?.trim());
+            }
+            if !output.stderr.is_empty() {
+                let raw_error_message = String::from_utf8(output.stderr)?;
+                writeln!(file, "{}", raw_error_message.trim())?;
+                file.flush()?;
+            }
+        }
         CommandOutput::Noop => (),
-
     }
-
     Ok(())
-
 }
 
 fn print_sys_program_failure_to_stderr(program: String, stderr: Vec<u8>) -> Result<()> {
@@ -438,13 +328,13 @@ fn print_sys_program_failure_to_stderr(program: String, stderr: Vec<u8>) -> Resu
 
             eprintln!("{}{}", program, err_msg.trim());
 
-        } else {
+                            } else {
 
             eprintln!("{}", raw_error_message.trim());
 
-        }
+                            }
 
-    } else {
+                    } else {
 
         eprintln!("{}", raw_error_message.trim());
 
@@ -488,13 +378,13 @@ fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutpu
 
                     )))
 
-                } else {
+                            } else {
 
                     Ok(CommandOutput::StdErr(format!("{}: not found", c)))
 
-                }
+                            }
 
-            } else {
+                    } else {
 
                 Ok(CommandOutput::Noop)
 
@@ -534,13 +424,13 @@ fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutpu
 
                     )))
 
-                } else {
+                                } else {
 
                     Ok(CommandOutput::Noop)
 
                 }
 
-            } else {
+                            } else {
 
                 Ok(CommandOutput::Noop)
 
@@ -556,7 +446,7 @@ fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutpu
 
                 Ok(CommandOutput::Wrapped(c.to_string(), output))
 
-            } else {
+                    } else {
 
                 Ok(CommandOutput::StdErr(format!("{}: command not found", c)))
 
@@ -596,7 +486,7 @@ fn parse(input: &str) -> ShellExec {
 
             ShellExec::RedirectedStdOut(command, PathBuf::from(file.join(" ")))
 
-        } else {
+                            } else {
 
             ShellExec::PrintToStd(Command::Invalid)
 
@@ -622,7 +512,7 @@ fn parse(input: &str) -> ShellExec {
 
             ShellExec::RedirectedStdOutAppend(command, PathBuf::from(file.join(" ")))
 
-        } else {
+                        } else {
 
             ShellExec::PrintToStd(Command::Invalid)
 
@@ -644,7 +534,7 @@ fn parse(input: &str) -> ShellExec {
 
             ShellExec::RedirectedStdErr(command, PathBuf::from(file.join(" ")))
 
-        } else {
+                } else {
 
             ShellExec::PrintToStd(Command::Invalid)
 
@@ -692,7 +582,7 @@ fn parse(input: &str) -> ShellExec {
 
         ShellExec::PrintToStd(command)
 
-    } else {
+                    } else {
 
         ShellExec::PrintToStd(Command::Empty)
 
@@ -720,7 +610,7 @@ fn redirected_command(command: Vec<String>) -> Command {
 
         }
 
-    } else {
+                            } else {
 
         Command::Invalid
 
@@ -770,7 +660,7 @@ fn tokenize(input: &str) -> Vec<String> {
 
                         in_escape = true;
 
-                    } else {
+                } else {
 
                         current_token.push(c);
 
