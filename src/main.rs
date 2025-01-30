@@ -4,6 +4,7 @@ use core::str;
 
 use std::io::{self, Write};
 use std::collections::HashSet;
+use std::cell::RefCell;
 use std::{
 
     env::{self, VarError},
@@ -30,10 +31,18 @@ use rustyline::Helper;
 use rustyline::Context;
 
 const BUILTIN_COMMANDS: [&str; 2] = ["echo", "exit"];
-
+]
 #[derive(Default)]
-struct ShellCompleter;
+struct ShellCompleter {
+    state: RefCell<CompletionState>,
+}
 
+struct CompletionState {
+    last_line: String,
+    last_pos: usize,
+    tab_count: usize,
+    matches: Vec<Pair>,
+}
 // Update the ShellCompleter's complete method
 impl Completer for ShellCompleter {
     type Candidate = Pair;
@@ -42,7 +51,7 @@ impl Completer for ShellCompleter {
         let start = line[..pos].rfind(char::is_whitespace).map_or(0, |i| i + 1);
         let word = &line[start..pos];
 
-        // Collect built-in commands that match the current word
+        // Collect built-in commands
         let built_in_matches: Vec<Pair> = BUILTIN_COMMANDS
             .iter()
             .filter(|&cmd| cmd.starts_with(word))
@@ -52,16 +61,15 @@ impl Completer for ShellCompleter {
             })
             .collect();
 
-        // Collect external executables from PATH directories
+        // Collect external executables
         let mut external_commands = Vec::new();
         if let Ok(path_var) = env::var("PATH") {
             for dir in path_var.split(':') {
                 if let Ok(entries) = fs::read_dir(dir) {
                     for entry in entries.flatten() {
                         if let Ok(file_type) = entry.file_type() {
-                            if file_type.is_file() {
+                            if file_type.is_file() || file_type.is_symlink() {
                                 if let Some(name) = entry.file_name().to_str() {
-                                    // Exclude built-in commands
                                     if !BUILTIN_COMMANDS.contains(&name) {
                                         external_commands.push(name.to_string());
                                     }
@@ -73,33 +81,66 @@ impl Completer for ShellCompleter {
             }
         }
 
-        // Deduplicate external commands, keeping first occurrence in PATH order
+        // Deduplicate and filter external commands
         let mut seen = HashSet::new();
-        let mut unique_externals = Vec::new();
-        for cmd in external_commands {
-            if !seen.contains(&cmd) {
-                seen.insert(cmd.clone());
-                unique_externals.push(cmd);
-            }
-        }
+        let unique_externals: Vec<String> = external_commands
+            .into_iter()
+            .filter(|cmd| {
+                if seen.contains(cmd) {
+                    false
+                } else {
+                    seen.insert(cmd.clone());
+                    true
+                }
+            })
+            .filter(|cmd| cmd.starts_with(word))
+            .collect();
 
-        // Filter external commands that match the current word
         let external_matches: Vec<Pair> = unique_externals
             .iter()
-            .filter(|&cmd| cmd.starts_with(word))
             .map(|cmd| Pair {
                 display: cmd.to_string(),
                 replacement: format!("{} ", cmd),
             })
             .collect();
 
-        // Combine built-in and external matches
-        let mut all_matches = built_in_matches;
-        all_matches.extend(external_matches);
+        // Combine matches
+        let all_matches = [built_in_matches, external_matches].concat();
+        let mut state = self.state.borrow_mut();
 
-        Ok((start, all_matches))
+        // Check if we're in the same completion context
+        if state.last_line == line && state.last_pos == pos {
+            state.tab_count += 1;
+        } else {
+            state.tab_count = 1;
+            state.last_line = line.to_string();
+            state.last_pos = pos;
+            state.matches = all_matches.clone();
+        }
+
+        // Handle multiple matches
+        if all_matches.len() > 1 {
+            if state.tab_count == 1 {
+                // First TAB: ring bell by returning empty
+                Ok((start, vec![]))
+            } else {
+                // Second TAB: return all matches with trailing spaces
+                let matches_with_spaces: Vec<Pair> = state.matches.iter().map(|pair| {
+                    Pair {
+                        display: pair.display.clone(),
+                        replacement: pair.replacement.clone(),
+                    }
+                }).collect();
+                Ok((start, matches_with_spaces))
+            }
+        } else {
+            // Single or no matches
+            Ok((start, all_matches))
+        }
     }
 }
+
+
 impl Helper for ShellCompleter {}
 impl Highlighter for ShellCompleter {}
 impl Hinter for ShellCompleter {
