@@ -31,7 +31,7 @@ use rustyline::Helper;
 use rustyline::Context;
 
 const BUILTIN_COMMANDS: [&str; 2] = ["echo", "exit"];
-
+]
 #[derive(Default)]
 struct ShellCompleter {
     state: RefCell<CompletionState>,
@@ -70,7 +70,7 @@ impl Completer for ShellCompleter {
                         if let Ok(file_type) = entry.file_type() {
                             if file_type.is_file() || file_type.is_symlink() {
                                 if let Some(name) = entry.file_name().to_str() {
-                                    if !BUILTIN_COMMANDS.contains(&name) {
+                                    if !BUILTIN_COMMANDS.contains(&name) && name.starts_with(word) {
                                         external_commands.push(name.to_string());
                                     }
                                 }
@@ -81,19 +81,11 @@ impl Completer for ShellCompleter {
             }
         }
 
-        // Deduplicate and filter external commands
+        // Deduplicate external commands
         let mut seen = HashSet::new();
         let unique_externals: Vec<String> = external_commands
             .into_iter()
-            .filter(|cmd| {
-                if seen.contains(cmd) {
-                    false
-                            } else {
-                    seen.insert(cmd.clone());
-                    true
-                }
-            })
-            .filter(|cmd| cmd.starts_with(word))
+            .filter(|cmd| seen.insert(cmd.clone()))
             .collect();
 
         let external_matches: Vec<Pair> = unique_externals
@@ -111,7 +103,7 @@ impl Completer for ShellCompleter {
         // Check if we're in the same completion context
         if state.last_line == line && state.last_pos == pos {
             state.tab_count += 1;
-                        } else {
+        } else {
             state.tab_count = 1;
             state.last_line = line.to_string();
             state.last_pos = pos;
@@ -121,21 +113,26 @@ impl Completer for ShellCompleter {
         // Handle multiple matches
         if all_matches.len() > 1 {
             if state.tab_count == 1 {
-                // First TAB: ring bell by returning empty
+                // First TAB: ring bell
+                print!("\x07");
+                io::stdout().flush().unwrap();
                 Ok((start, vec![]))
-                    } else {
-                // Second TAB: return all matches with trailing spaces
-                let matches_with_spaces: Vec<Pair> = state.matches.iter().map(|pair| {
-                    Pair {
-                        display: pair.display.clone(),
-                        replacement: pair.replacement.clone(),
-                    }
-                }).collect();
-                Ok((start, matches_with_spaces))
+            } else {
+                // Second TAB: print all matches
+                println!("\n{}", state.matches.iter()
+                    .map(|p| p.display.clone())
+                    .collect::<Vec<_>>()
+                    .join("  "));
+                print!("$ {}", line);
+                io::stdout().flush().unwrap();
+                Ok((start, vec![]))
             }
-        } else {
-            // Single or no matches
+        } else if all_matches.len() == 1 {
+            // Single match: complete immediately
             Ok((start, all_matches))
+        } else {
+            // No matches
+            Ok((start, vec![]))
         }
     }
 }
@@ -211,62 +208,121 @@ fn main() -> Result<()> {
     rl.set_helper(Some(ShellCompleter));
 
     loop {
-        print!("$ ");
-        io::stdout().flush()?;
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let trimmed_input = input.trim();
+        match rl.readline("$ ") {
 
-        let exec = parse(trimmed_input);
-        match exec {
-            ShellExec::PrintToStd(Command::Exit(s)) if s == "0" => break,
-            ShellExec::RedirectedStdOut(Command::Exit(s), _) if s == "0" => break,
-            ShellExec::PrintToStd(Command::Empty) => continue,
-            ShellExec::RedirectedStdOut(Command::Empty, _) => continue,
-            ShellExec::PrintToStd(c) => {
-                let output = exec_command(c, &path, &home)?;
-                match output {
-                    CommandOutput::StdOut(s) => println!("{}", s),
-                    CommandOutput::StdErr(s) => eprintln!("{}", s),
-                    CommandOutput::Wrapped(c, output) => {
-                        if !output.stdout.is_empty() {
-                            println!("{}", String::from_utf8(output.stdout)?.trim())
-                        }
-                        if !output.stderr.is_empty() {
-                            print_sys_program_failure_to_stderr(c, output.stderr)?
-                        }
-                    }
-                    CommandOutput::Noop => continue,
+            Ok(line) => {
+
+                let trimmed_input = line.trim();
+
+                if !trimmed_input.is_empty() {
+
+                    rl.add_history_entry(trimmed_input);
+
                 }
+
+                let exec = parse(trimmed_input);
+
+                match exec {
+
+                    ShellExec::PrintToStd(Command::Exit(s)) if s == "0" => break,
+
+                    ShellExec::RedirectedStdOut(Command::Exit(s), _) if s == "0" => break,
+
+                    ShellExec::PrintToStd(Command::Empty) => continue,
+
+                    ShellExec::RedirectedStdOut(Command::Empty, _) => continue,
+
+                    ShellExec::PrintToStd(c) => {
+
+                        let output = exec_command(c, &path, &home)?;
+
+                        match output {
+
+                            CommandOutput::StdOut(s) => println!("{}", s),
+
+                            CommandOutput::StdErr(s) => eprintln!("{}", s),
+
+                            CommandOutput::Wrapped(c, output) => {
+
+                                if !output.stdout.is_empty() {
+
+                                    println!("{}", String::from_utf8(output.stdout)?.trim())
+
+                                }
+
+                                if !output.stderr.is_empty() {
+
+                                    print_sys_program_failure_to_stderr(c, output.stderr)?
+
+                                }
+
+                            }
+
+                            CommandOutput::Noop => continue,
+
+                        }
+
+                    }
+
+                    ShellExec::RedirectedStdOut(command, file) => {
+
+                        let file = File::create(file)?;
+
+                        let output = exec_command(command, &path, &home)?;
+
+                        handle_redirected_std_out(file, output)?
+
+                    }
+
+                    ShellExec::RedirectedStdOutAppend(command, file) => {
+
+                        let file = OpenOptions::new().append(true).create(true).open(file)?;
+
+                        let output = exec_command(command, &path, &home)?;
+
+                        handle_redirected_std_out(file, output)?
+
+                    }
+
+                    ShellExec::RedirectedStdErr(command, file) => {
+
+                        let file = File::create(file)?;
+
+                        let output = exec_command(command, &path, &home)?;
+
+                        handle_redirected_std_err(file, output)?
+
+                    }
+
+                    ShellExec::RedirectedStdErrAppend(command, file) => {
+
+                        let file = OpenOptions::new().append(true).create(true).open(file)?;
+
+                        let output = exec_command(command, &path, &home)?;
+
+                        handle_redirected_std_err(file, output)?
+
+                    }
+
+                }
+
             }
-            ShellExec::RedirectedStdOut(command, file) => {
-                let mut file = File::create(file)?;
-                let output = exec_command(command, &path, &home)?;
-                handle_redirected_std_out(file, output)?;
+
+            Err(ReadlineError::Interrupted) => continue,
+
+            Err(ReadlineError::Eof) => break,
+
+            Err(err) => {
+
+                eprintln!("Error: {}", err);
+
+                break;
+
             }
-            ShellExec::RedirectedStdOutAppend(command, file) => {
-                let mut file = OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(file)?;
-                let output = exec_command(command, &path, &home)?;
-                handle_redirected_std_out(file, output)?;
-            }
-            ShellExec::RedirectedStdErr(command, file) => {
-                let mut file = File::create(file)?;
-                let output = exec_command(command, &path, &home)?;
-                handle_redirected_std_err(file, output)?;
-            }
-            ShellExec::RedirectedStdErrAppend(command, file) => {
-                let mut file = OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(file)?;
-                let output = exec_command(command, &path, &home)?;
-                handle_redirected_std_err(file, output)?;
-            }
+
         }
+
     }
 
     Ok(())
@@ -274,46 +330,97 @@ fn main() -> Result<()> {
 }
 
 fn handle_redirected_std_out(mut file: File, output: CommandOutput) -> Result<()> {
+
     match output {
+
         CommandOutput::StdOut(s) => {
+
             writeln!(file, "{}", s)?;
-            file.flush()?;
+
+            file.flush()?
+
         }
+
         CommandOutput::StdErr(s) => eprintln!("{}", s),
+
         CommandOutput::Wrapped(c, output) => {
+
             if !output.stdout.is_empty() {
+
                 writeln!(file, "{}", String::from_utf8(output.stdout)?.trim())?;
-                file.flush()?;
+
+                file.flush()?
+
             }
+
             if !output.stderr.is_empty() {
-                print_sys_program_failure_to_stderr(c, output.stderr)?;
+
+                print_sys_program_failure_to_stderr(c, output.stderr)?
+
             }
+
         }
+
         CommandOutput::Noop => (),
+
     }
+
     Ok(())
+
 }
 
 fn handle_redirected_std_err(mut file: File, output: CommandOutput) -> Result<()> {
+
     match output {
-        CommandOutput::StdOut(s) => println!("{}", s),
-        CommandOutput::StdErr(s) => {
-            writeln!(file, "{}", s)?;
-            file.flush()?;
-        }
+
+        CommandOutput::StdOut(s) => eprintln!("{}", s),
+
+        CommandOutput::StdErr(s) => writeln!(file, "{}", s)?,
+
         CommandOutput::Wrapped(c, output) => {
+
             if !output.stdout.is_empty() {
-                println!("{}", String::from_utf8(output.stdout)?.trim());
+
+                println!("{}", String::from_utf8(output.stdout)?.trim())
+
             }
+
             if !output.stderr.is_empty() {
+
                 let raw_error_message = String::from_utf8(output.stderr)?;
-                writeln!(file, "{}", raw_error_message.trim())?;
+
+                if let Some(split_point) = raw_error_message.find(&c) {
+
+                    if let Some((_, right_half)) = raw_error_message.split_at_checked(split_point) {
+
+                        let err_msg = &right_half[c.len()..];
+
+                        writeln!(file, "{}{}", c, err_msg.trim())?;
+
+                            } else {
+
+                        writeln!(file, "{}", raw_error_message.trim())?;
+
+                    }
+
+                        } else {
+
+                    writeln!(file, "{}", raw_error_message.trim())?;
+
+                }
+
                 file.flush()?;
+
             }
+
         }
+
         CommandOutput::Noop => (),
+
     }
+
     Ok(())
+
 }
 
 fn print_sys_program_failure_to_stderr(program: String, stderr: Vec<u8>) -> Result<()> {
