@@ -125,7 +125,7 @@ impl Completer for ShellCompleter {
                 // First TAB: ring bell
                 print!("\x07");
                 io::stdout().flush().ok();
-                Ok((start, vec![]))
+                Ok((pos, vec![])) // Preserve the full input by returning `pos`
             } else {
                 // Second TAB: print matches separated by two spaces
                 println!();
@@ -134,8 +134,8 @@ impl Completer for ShellCompleter {
                 }
                 println!();
                 io::stdout().flush().ok();
-                // Return no immediate completion so the prompt remains the same
-                Ok((start, vec![]))
+                // Return no immediate completion so that the prompt shows original input.
+                Ok((pos, vec![]))
             }
         } else {
             // Single or no matches
