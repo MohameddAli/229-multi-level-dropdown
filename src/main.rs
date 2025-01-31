@@ -134,6 +134,9 @@ impl Completer for ShellCompleter {
                 }
                 println!();
                 io::stdout().flush().ok();
+                // Reprint prompt with the original input so it remains visible.
+                print!("$ {}", line);
+                io::stdout().flush().ok();
                 // Return no immediate completion so that the prompt shows original input.
                 Ok((pos, vec![]))
             }
