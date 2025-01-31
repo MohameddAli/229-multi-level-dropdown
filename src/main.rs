@@ -118,20 +118,22 @@ impl Completer for ShellCompleter {
             state.matches = all_matches.clone();
         }
 
-        // Handle multiple matches
         if all_matches.len() > 1 {
             if state.tab_count == 1 {
-                // First TAB: ring bell by returning empty
+                // First TAB: ring bell
+                print!("\x07");
+                io::stdout().flush().ok();
                 Ok((start, vec![]))
             } else {
-                // Second TAB: return all matches with trailing spaces
-                let matches_with_spaces: Vec<Pair> = state.matches.iter().map(|pair| {
-                    Pair {
-                        display: pair.display.clone(),
-                        replacement: pair.replacement.clone(),
-                    }
-                }).collect();
-                Ok((start, matches_with_spaces))
+                // Second TAB: print matches separated by two spaces
+                println!();
+                for pair in &state.matches {
+                    print!("{}  ", pair.display);
+                }
+                println!();
+                io::stdout().flush().ok();
+                // Return no immediate completion so the prompt remains the same
+                Ok((start, vec![]))
             }
         } else {
             // Single or no matches
@@ -218,7 +220,7 @@ fn main() -> Result<()> {
 
                 let trimmed_input = line.trim();
 
-                if !trimmed_input.is_empty() {
+                if (!trimmed_input.is_empty()) {
 
                     rl.add_history_entry(trimmed_input);
 
@@ -248,13 +250,13 @@ fn main() -> Result<()> {
 
                             CommandOutput::Wrapped(c, output) => {
 
-                                if !output.stdout.is_empty() {
+                                if (!output.stdout.is_empty()) {
 
                                     println!("{}", String::from_utf8(output.stdout)?.trim())
 
                                 }
 
-                                if !output.stderr.is_empty() {
+                                if (!output.stderr.is_empty()) {
 
                                     print_sys_program_failure_to_stderr(c, output.stderr)?
 
@@ -348,7 +350,7 @@ fn handle_redirected_std_out(mut file: File, output: CommandOutput) -> Result<()
 
         CommandOutput::Wrapped(c, output) => {
 
-            if !output.stdout.is_empty() {
+            if (!output.stdout.is_empty()) {
 
                 writeln!(file, "{}", String::from_utf8(output.stdout)?.trim())?;
 
@@ -356,7 +358,7 @@ fn handle_redirected_std_out(mut file: File, output: CommandOutput) -> Result<()
 
             }
 
-            if !output.stderr.is_empty() {
+            if (!output.stderr.is_empty()) {
 
                 print_sys_program_failure_to_stderr(c, output.stderr)?
 
@@ -382,13 +384,13 @@ fn handle_redirected_std_err(mut file: File, output: CommandOutput) -> Result<()
 
         CommandOutput::Wrapped(c, output) => {
 
-            if !output.stdout.is_empty() {
+            if (!output.stdout.is_empty()) {
 
                 println!("{}", String::from_utf8(output.stdout)?.trim())
 
             }
 
-            if !output.stderr.is_empty() {
+            if (!output.stderr.is_empty()) {
 
                 let raw_error_message = String::from_utf8(output.stderr)?;
 
@@ -474,7 +476,7 @@ fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutpu
 
         Command::Type(c) => {
 
-            if !c.is_empty() {
+            if (!c.is_empty()) {
 
                 if let Some(executable) = find_executable_on_path(path, &c)? {
 
@@ -512,9 +514,9 @@ fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutpu
 
         Command::Cd(directory) => {
 
-            if !directory.is_empty() {
+            if (!directory.is_empty()) {
 
-                let dir_path = if directory == "~" {
+                let dir_path = if (directory == "~") {
 
                     Path::new(home)
 
@@ -524,7 +526,7 @@ fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutpu
 
                 };
 
-                if env::set_current_dir(dir_path).is_err() {
+                if (env::set_current_dir(dir_path).is_err()) {
 
                     Ok(CommandOutput::StdOut(format!(
 
