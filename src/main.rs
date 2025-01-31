@@ -94,8 +94,6 @@ impl Completer for ShellCompleter {
             })
             .filter(|cmd| cmd.starts_with(word))
             .collect();
-
-        // Sort the matches for consistent order
         unique_externals.sort();
 
         let external_matches: Vec<Pair> = unique_externals
@@ -106,45 +104,76 @@ impl Completer for ShellCompleter {
             })
             .collect();
 
-        // Combine matches
-        let all_matches = [built_in_matches, external_matches].concat();
-        let mut state = self.state.borrow_mut();
+        let mut all_matches = [built_in_matches, external_matches].concat();
+        all_matches.sort_by(|a, b| a.display.cmp(&b.display));
 
-        // Check if we're in the same completion context
+        // Update completion state
+        let mut state = self.state.borrow_mut();
         if state.last_line == line && state.last_pos == pos {
             state.tab_count += 1;
         } else {
-            state.tab_count = 1;
             state.last_line = line.to_string();
             state.last_pos = pos;
+            state.tab_count = 1;
             state.matches = all_matches.clone();
         }
 
+        // Compute longest common prefix (without trailing space)
+        let candidate_strings: Vec<String> = all_matches
+            .iter()
+            .map(|p| p.replacement.trim_end().to_string())
+            .collect();
+        let lcp = longest_common_prefix(&candidate_strings);
+
+        // If we can extend the current word, complete to the longest common prefix.
+        if lcp.len() > word.len() {
+            return Ok((start, vec![Pair {
+                display: lcp.clone(),
+                replacement: lcp,
+            }]));
+        }
+
+        // If multiple matches exist, handle repeated Tab presses.
         if all_matches.len() > 1 {
             if state.tab_count == 1 {
                 // First TAB: ring bell
                 print!("\x07");
                 io::stdout().flush().ok();
-                Ok((pos, vec![])) // Preserve the full input by returning `pos`
+                Ok((pos, vec![]))
             } else {
-                // Second TAB: print matches separated by two spaces
+                // Second TAB: print suggestions (separated by 2 spaces) and reprint prompt.
                 println!();
                 for pair in &state.matches {
                     print!("{}  ", pair.display);
                 }
                 println!();
                 io::stdout().flush().ok();
-                // Reprint prompt with the original input so it remains visible.
                 print!("$ {}", line);
                 io::stdout().flush().ok();
-                // Return no immediate completion so that the prompt shows original input.
                 Ok((pos, vec![]))
             }
         } else {
-            // Single or no matches
+            // Only one match available.
             Ok((start, all_matches))
         }
     }
+}
+
+// Helper function: compute longest common prefix of given strings.
+fn longest_common_prefix(strings: &[String]) -> String {
+    if strings.is_empty() {
+        return String::new();
+    }
+    let mut prefix = strings[0].clone();
+    for s in strings.iter().skip(1) {
+        while !s.starts_with(&prefix) {
+            if prefix.is_empty() {
+                break;
+            }
+            prefix.pop();
+        }
+    }
+    prefix
 }
 
 impl Helper for ShellCompleter {}
