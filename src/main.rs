@@ -82,7 +82,7 @@ impl Completer for ShellCompleter {
 
         // Deduplicate and filter external commands
         let mut seen = HashSet::new();
-        let unique_externals: Vec<String> = external_commands
+        let mut unique_externals: Vec<String> = external_commands
             .into_iter()
             .filter(|cmd| {
                 if seen.contains(cmd) {
@@ -94,6 +94,9 @@ impl Completer for ShellCompleter {
             })
             .filter(|cmd| cmd.starts_with(word))
             .collect();
+
+        // Sort the matches for consistent order
+        unique_externals.sort();
 
         let external_matches: Vec<Pair> = unique_externals
             .iter()
