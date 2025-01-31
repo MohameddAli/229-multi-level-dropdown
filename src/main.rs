@@ -12,6 +12,16 @@ use rustyline::{
     error::ReadlineError,
     Context, Editor, Helper,
 };
+// Added imports for missing traits and types
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use std::process::Output;
+use std::fs::{File, OpenOptions};
+use std::path::Path;
+use std::process::Stdio;
+use std::string::FromUtf8Error;
+use std::env::VarError;
 
 const BUILTIN_COMMANDS: [&str; 2] = ["echo", "exit"];
 
@@ -198,7 +208,7 @@ fn main() -> Result<()> {
 
     let mut rl = Editor::new()?;
 
-    rl.set_helper(Some(ShellCompleter));
+    rl.set_helper(Some(ShellCompleter::default()));
 
     loop {
 
