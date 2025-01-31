@@ -5,6 +5,7 @@ use std::{
     env,
     fs,
     io::{self, Write},
+    os::unix::process::CommandExt, // Added import for CommandExt
     path::PathBuf,
 };
 use rustyline::{
@@ -12,7 +13,6 @@ use rustyline::{
     error::ReadlineError,
     Context, Editor, Helper,
 };
-// Added imports for missing traits and types
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
@@ -30,6 +30,7 @@ struct ShellCompleter {
     state: RefCell<CompletionState>,
 }
 
+#[derive(Default)] // Added Default derive to CompletionState
 struct CompletionState {
     last_line: String,
     last_pos: usize,
@@ -218,7 +219,7 @@ fn main() -> Result<()> {
 
                 let trimmed_input = line.trim();
 
-                if (!trimmed_input.is_empty()) {
+                if !trimmed_input.is_empty() {  // Removed redundant parentheses
 
                     rl.add_history_entry(trimmed_input);
 
@@ -248,13 +249,13 @@ fn main() -> Result<()> {
 
                             CommandOutput::Wrapped(c, output) => {
 
-                                if (!output.stdout.is_empty()) {
+                                if !output.stdout.is_empty() {
 
                                     println!("{}", String::from_utf8(output.stdout)?.trim())
 
                                 }
 
-                                if (!output.stderr.is_empty()) {
+                                if !output.stderr.is_empty() {
 
                                     print_sys_program_failure_to_stderr(c, output.stderr)?
 
@@ -348,7 +349,7 @@ fn handle_redirected_std_out(mut file: File, output: CommandOutput) -> Result<()
 
         CommandOutput::Wrapped(c, output) => {
 
-            if (!output.stdout.is_empty()) {
+            if !output.stdout.is_empty() { // Removed redundant parentheses
 
                 writeln!(file, "{}", String::from_utf8(output.stdout)?.trim())?;
 
@@ -356,7 +357,7 @@ fn handle_redirected_std_out(mut file: File, output: CommandOutput) -> Result<()
 
             }
 
-            if (!output.stderr.is_empty()) {
+            if !output.stderr.is_empty() { // Removed redundant parentheses
 
                 print_sys_program_failure_to_stderr(c, output.stderr)?
 
@@ -382,13 +383,13 @@ fn handle_redirected_std_err(mut file: File, output: CommandOutput) -> Result<()
 
         CommandOutput::Wrapped(c, output) => {
 
-            if (!output.stdout.is_empty()) {
+            if !output.stdout.is_empty() {
 
                 println!("{}", String::from_utf8(output.stdout)?.trim())
 
             }
 
-            if (!output.stderr.is_empty()) {
+            if !output.stderr.is_empty() {
 
                 let raw_error_message = String::from_utf8(output.stderr)?;
 
@@ -474,7 +475,7 @@ fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutpu
 
         Command::Type(c) => {
 
-            if (!c.is_empty()) {
+            if !c.is_empty() { // Removed redundant parentheses
 
                 if let Some(executable) = find_executable_on_path(path, &c)? {
 
@@ -512,9 +513,9 @@ fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutpu
 
         Command::Cd(directory) => {
 
-            if (!directory.is_empty()) {
+            if !directory.is_empty() {
 
-                let dir_path = if (directory == "~") {
+                let dir_path = if directory == "~" { // Removed redundant parentheses
 
                     Path::new(home)
 
@@ -524,7 +525,7 @@ fn exec_command(command: Command, path: &str, home: &str) -> Result<CommandOutpu
 
                 };
 
-                if (env::set_current_dir(dir_path).is_err()) {
+                if env::set_current_dir(dir_path).is_err() {
 
                     Ok(CommandOutput::StdOut(format!(
 
@@ -708,7 +709,7 @@ fn redirected_command(command: Vec<String>) -> Command {
 
             "echo" => Command::Echo(tail.join(" ")),
 
-            "exit" => Command::Exit(tail.join(" ")),
+            "exit" => Command::Exit(tail.join(" ")), 
 
             "type" => Command::Type(tail.join(" ")),
 
