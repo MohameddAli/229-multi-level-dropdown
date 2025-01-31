@@ -1,37 +1,20 @@
 use core::str;
-
-#[allow(unused_imports)]
-
-use std::io::{self, Write};
-use std::collections::HashSet;
-use std::cell::RefCell;
 use std::{
-
-    env::{self, VarError},
-
-    fs::{File, OpenOptions},
-
-    path::Path,
-
-    process::{Output, Stdio},
-
-    string::FromUtf8Error,
-
+    cell::RefCell,
+    collections::HashSet,
+    env,
+    fs,
+    io::{self, Write},
+    path::PathBuf,
+};
+use rustyline::{
+    completion::{Completer, Pair},
+    error::ReadlineError,
+    Context, Editor, Helper,
 };
 
-use std::{fs, path::PathBuf};
-use std::os::unix::process::CommandExt;
-use rustyline::error::ReadlineError;
-use rustyline::Editor;
-use rustyline::completion::{Completer, Pair};
-use rustyline::highlight::Highlighter;
-use rustyline::hint::Hinter;
-use rustyline::validate::Validator;
-use rustyline::Helper;
-use rustyline::Context;
-
 const BUILTIN_COMMANDS: [&str; 2] = ["echo", "exit"];
-]
+
 #[derive(Default)]
 struct ShellCompleter {
     state: RefCell<CompletionState>,
@@ -43,11 +26,16 @@ struct CompletionState {
     tab_count: usize,
     matches: Vec<Pair>,
 }
-// Update the ShellCompleter's complete method
+
 impl Completer for ShellCompleter {
     type Candidate = Pair;
 
-    fn complete(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> rustyline::Result<(usize, Vec<Pair>)> {
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
         let start = line[..pos].rfind(char::is_whitespace).map_or(0, |i| i + 1);
         let word = &line[start..pos];
 
@@ -142,8 +130,8 @@ impl Completer for ShellCompleter {
     }
 }
 
-
 impl Helper for ShellCompleter {}
+
 impl Highlighter for ShellCompleter {}
 impl Hinter for ShellCompleter {
     type Hint = String;
