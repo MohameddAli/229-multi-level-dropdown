@@ -123,10 +123,14 @@ impl Completer for ShellCompleter {
             .iter()
             .map(|p| p.replacement.trim_end().to_string())
             .collect();
-        let lcp = longest_common_prefix(&candidate_strings);
+        let mut lcp = longest_common_prefix(&candidate_strings);
 
         // If we can extend the current word, complete to the longest common prefix.
         if lcp.len() > word.len() {
+            // If there's a unique match, add trailing space.
+            if all_matches.len() == 1 {
+                lcp.push(' ');
+            }
             return Ok((start, vec![Pair {
                 display: lcp.clone(),
                 replacement: lcp,
